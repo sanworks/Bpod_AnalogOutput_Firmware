@@ -29,7 +29,7 @@ SdFatSdioEX SD;
 #define SERIAL_TX_BUFFER_SIZE 256
 #define SERIAL_RX_BUFFER_SIZE 256
 
-#define FirmwareVersion 1
+#define FirmwareVersion 2
 
 // Module setup
 char moduleName[] = "AudioPlayer"; // Name of module for manual override UI and state machine assembler
@@ -74,8 +74,6 @@ boolean loading2SD = false; // True if loading from USB -> microsd
 boolean playingLastCycle = false; // True if playback was active on the previous hardware timer callback (for resetting timer to idle refresh rate)
 boolean schedulePlaybackStop = 0; // Reminds the program to set playing = false after next DAC update
 boolean sendBpodEvents = false; // Sends a byte to Bpod state machine, to indicate playback start and stop.
-byte loopMode = 0; // (for each channel) Loops waveform until loopDuration seconds
-uint32_t loopDuration = 0; // Duration of loop for loop mode (in samples)
 uint32_t channelTime = 0; // Time (in samples) since loop was triggered (used to compute looped playback end)
 byte waveIndex = 0; // Index of current waveform used for local op (1-maxWaves; maxWaves is in the "parameters" section above) Note: iWavePlaying = current playback waveform
 byte wave2Play = 0; // Index of waveform being triggered (before playback begins)
@@ -103,6 +101,7 @@ boolean preBufferLoaded = false; // During load, whether the sound's RAM pre-buf
 byte waveLoading = 0; // During load, index of waveform being loaded
 byte bufLoading = 0; // During load, load-buffer side of waveform being loaded
 uint32_t nBytes2LoadThisCycle = 0; // During load, the number of bytes to read from USB and write to microSD this cycle
+
 // Waveform metadata
 boolean isStereo[maxWaves][2] = {false}; // True if stereo, false if mono
 byte nBytesPerSample[maxWaves][2] = {2}; // Number of bytes per sample; 2 if mono, 4 if stereo
@@ -120,6 +119,12 @@ union { // Floating point amplitude in range 1 (max intensity) -> 0 (silent). Da
     byte byteArray[maxEnvelopeSize*4];
     float floatArray[maxEnvelopeSize];
 } AMenvelope; // Default hardware timer period during playback, in microseconds (100 = 10kHz). Set as a Union so it can be read as bytes.
+
+// Loop Mode
+byte loopMode[maxWaves] = {0}; // (for each sound) Loops waveform until loopDuration seconds
+uint32_t loopDuration[maxWaves] = {0}; // Duration of loop for loop mode (in samples). 0 = loop until canceled
+boolean currentLoopMode = false; // Loop mode, for the currently triggered sound
+
 int16_t CurrentSampleAmplitude = 0; // Stores difference between current sample and 0V
 byte skipLoading = 0;
 // Communication variables
@@ -170,9 +175,7 @@ void setup() {
   SPI.begin(); // Initialize SPI interface
   SPI.beginTransaction(DACSettings); // Set SPI parameters to DAC speed and bit order
   digitalWrite(LDACPin, LOW); // Ensure DAC load pin is at default level (low)
-  ProgramDAC(16, 0, 31); // Power up all channels + internal ref)
-  ProgramDAC(12, 0, 3); // Set output range to +/- 5V
-  zeroDAC(); // Set all DAC channels to 0V
+  setupDAC();
   SD.begin(); // Initialize microSD card
   timerPeriod.floatVal = 22.675737; // Set a default sampling rate (44.1kHz)
   hardwareTimer.begin(handler, timerPeriod.floatVal); // hardwareTimer is an interval timer object - Teensy 3.6's hardware timer
@@ -255,7 +258,7 @@ void handler(){ // The handler is triggered precisely every timerPeriod microsec
   if (newOpCode) { // If an op byte arrived from one of the serial interfaces
     newOpCode = false;
     switch(opCode) {
-      case 229: // Handshake
+      case 229: // Handshake and reset
         if (opSource == 0) {
           USBCOM.writeByte(230); // Unique reply-byte
           USBCOM.writeUint32(FirmwareVersion); // Send firmware version
@@ -265,33 +268,41 @@ void handler(){ // The handler is triggered precisely every timerPeriod microsec
             newWaveLoaded[i] = false;
             nSamples[i][0] = 0; nSamples[i][1] = 0; 
         }
+        timerPeriod.floatVal = 22.675737;
+        triggerMode = 0;
+        sendBpodEvents = 0;
+        for (int i = 0; i < maxWaves; i++) {
+          loopMode[i] = 0;
+          loopDuration[i] = 0;
+        }
+        setupDAC();
       break;
       case 255: // Return Bpod module info
         if (opSource == 1) { // Only returns this info if requested from state machine device
           returnModuleInfo();
         }
       break;
-      case 'N': // Return params + config
+      case 'N': // Return system constants
         if (opSource == 0){
           USBCOM.writeByte(1); // 1 = Live mode (this file), 0 = Standard mode (BpodAudioPlayer firmware)
           USBCOM.writeUint16(maxWaves);
           USBCOM.writeUint16(maxEnvelopeSize);
           USBCOM.writeUint32(maxSamplingRate);
-          USBCOM.writeByte(triggerMode);
-          USBCOM.writeByteArray(timerPeriod.byteArray, 4);
-          USBCOM.writeByte(sendBpodEvents);
-          USBCOM.writeByte(loopMode);
-          USBCOM.writeUint32(loopDuration);
         }
       break;
-      case 'O': // Set loop mode and duration (for each channel)
-      if (opSource == 0){
-          loopMode = USBCOM.readByte();
-          loopDuration = USBCOM.readUint32();
-        USBCOM.writeByte(1); // Acknowledge
-      }
+      case 'O': // Set loop mode (for each sound)
+        if (opSource == 0){
+          USBCOM.readByteArray(loopMode, maxWaves);
+          USBCOM.writeByte(1); // Acknowledge
+        }
       break;
-      case 'V': // Set Bpod event reporting (for each channel)
+      case '-': // Set loop duration (for each sound)
+        if (opSource == 0){
+          USBCOM.readUint32Array(loopDuration,maxWaves);
+          USBCOM.writeByte(1); // Acknowledge
+        }
+      break;
+      case 'V': // Set Bpod event reporting
       if (opSource == 0){
         sendBpodEvents = USBCOM.readByte();
         USBCOM.writeByte(1); // Acknowledge
@@ -458,6 +469,7 @@ void handler(){ // The handler is triggered precisely every timerPeriod microsec
           if (BpodMessage > 0) {
             Serial1COM.writeByte(BpodMessage); 
           }
+          currentLoopMode = loopMode[wave2Play];
       break;
       case 'X': // Stop all playback
         if (useAMEnvelope) {
@@ -553,8 +565,8 @@ void handler(){ // The handler is triggered precisely every timerPeriod microsec
     }
     currentPlaySample++;
     channelTime++;
-    if (currentPlaySample > nSamples[iWavePlaying][bufLoaded]) {
-      if (loopMode) {
+    if (currentPlaySample == nSamples[iWavePlaying][bufLoaded]) {
+      if (currentLoopMode) {
         resetChannel();
       } else {
         schedulePlaybackStop = true;
@@ -567,7 +579,7 @@ void handler(){ // The handler is triggered precisely every timerPeriod microsec
         dacValue.uint16[1] = DACBits_ZeroVolts;
       }
     } else {
-      if ((useAMEnvelope) && (!inFadeOut) && (!loopMode)) {
+      if ((useAMEnvelope) && (!inFadeOut) && (!currentLoopMode)) {
         if (currentPlaySample > nSamples[iWavePlaying][bufLoaded] - envelopeSize - 1) {
           inFadeOut = true;
           envelopeDir = 1;
@@ -575,13 +587,15 @@ void handler(){ // The handler is triggered precisely every timerPeriod microsec
         }
       }
     }
-    if (loopMode) {
-      if (channelTime > loopDuration) {
-        schedulePlaybackStop = true;
-        if (currentLoadBuffer[iWavePlaying] == 0) {
-          playbackFilePos = (maxWaveSizeBytes*iWavePlaying);
-        } else {
-          playbackFilePos = (maxWaveSizeBytes*iWavePlaying) + bufferSideBOffset;
+    if (currentLoopMode) {
+      if (!(loopDuration[iWavePlaying]==0)) {
+        if (channelTime > loopDuration[iWavePlaying]) {
+          schedulePlaybackStop = true;
+          if (currentLoadBuffer[iWavePlaying] == 0) {
+            playbackFilePos = (maxWaveSizeBytes*iWavePlaying);
+          } else {
+            playbackFilePos = (maxWaveSizeBytes*iWavePlaying) + bufferSideBOffset;
+          }
         }
       }
     }
@@ -671,6 +685,12 @@ void zeroDAC() {
   playing = true; // Temporarily set all channels to play-enable, so they get updated
   dacWrite(); // Update the DAC, to set all channels to mid-range (0V)
   playing = false;
+}
+
+void setupDAC() {
+  ProgramDAC(16, 0, 31); // Power up all channels + internal ref)
+  ProgramDAC(12, 0, 3); // Set output range to +/- 5V
+  zeroDAC(); // Set all DAC channels to 0V
 }
 
 void startPlayback(byte thisWave) {
