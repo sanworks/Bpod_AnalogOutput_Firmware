@@ -26,8 +26,6 @@
 #include <SPI.h>
 #include "SdFat.h"
 SdFatSdioEX SD;
-#define SERIAL_TX_BUFFER_SIZE 256
-#define SERIAL_RX_BUFFER_SIZE 256
 
 #define FirmwareVersion 2
 
@@ -36,7 +34,7 @@ char moduleName[] = "AudioPlayer"; // Name of module for manual override UI and 
 
 // Parameters
 const byte maxWaves = 20; // Maximum number of waveforms (used to set up data buffers and to ensure data file is large enough)
-const uint32_t bufSize = 2048; //1280; // Buffer size (in samples). Larger buffers prevent underruns, but take up memory.
+const uint32_t bufSize = 2000; //1280; // Buffer size (in samples). Larger buffers prevent underruns, but take up memory.
                                     // Each wave in MaxWaves is allocated 1 buffer worth of sRAM (Teensy 3.6 total sRAM = 256k)
 const uint32_t maxWaveSize = 1000000; // Maximum number of samples per waveform
 const uint16_t maxEnvelopeSize = 10000; // Maximum size of AM onset/offset envelope (in samples)
@@ -661,20 +659,20 @@ void ProgramDAC(byte Data1, byte Data2, byte Data3) {
 
 void dacWrite() {
   if (playing) {
-    digitalWrite(LDACPin,HIGH);
-    digitalWrite(SyncPin,LOW);
+    digitalWriteFast(LDACPin,HIGH);
+    digitalWriteFast(SyncPin,LOW);
     dacBuffer[0] = 3;
     dacBuffer[1] = dacValue.byteArray[1];
     dacBuffer[2] = dacValue.byteArray[0];
     SPI.transfer(dacBuffer,3);
-    digitalWrite(SyncPin,HIGH);
+    digitalWriteFast(SyncPin,HIGH);
     digitalWrite(SyncPin,LOW);
     dacBuffer[0] = 2;
     dacBuffer[1] = dacValue.byteArray[3];
     dacBuffer[2] = dacValue.byteArray[2];
     SPI.transfer(dacBuffer,3);
-    digitalWrite(SyncPin,HIGH);
-    digitalWrite(LDACPin,LOW);
+    digitalWriteFast(SyncPin,HIGH);
+    digitalWriteFast(LDACPin,LOW);
   }
 }
 

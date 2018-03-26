@@ -26,8 +26,6 @@
 #include <SPI.h>
 #include "SdFat.h"
 SdFatSdioEX SD;
-#define SERIAL_TX_BUFFER_SIZE 256
-#define SERIAL_RX_BUFFER_SIZE 256
 
 #define FirmwareVersion 1
 
@@ -612,14 +610,14 @@ void ProgramDAC(byte Data1, byte Data2, byte Data3) {
 }
 
 void dacWrite() {
-  digitalWrite(LDACPin,HIGH);
+  digitalWriteFast(LDACPin,HIGH);
   if (playing[0]) {
-    digitalWrite(SyncPin,LOW);
+    digitalWriteFast(SyncPin,LOW);
     dacBuffer[0] = 3;
     dacBuffer[1] = dacValue.byteArray[1];
     dacBuffer[2] = dacValue.byteArray[0];
     SPI.transfer(dacBuffer,3);
-    digitalWrite(SyncPin,HIGH);
+    digitalWriteFast(SyncPin,HIGH);
   }
   if (playing[1]) {
     digitalWrite(SyncPin,LOW);
@@ -627,7 +625,7 @@ void dacWrite() {
     dacBuffer[1] = dacValue.byteArray[3];
     dacBuffer[2] = dacValue.byteArray[2];
     SPI.transfer(dacBuffer,3);
-    digitalWrite(SyncPin,HIGH);
+    digitalWriteFast(SyncPin,HIGH);
   }
   if (playing[2]) {
     digitalWrite(SyncPin,LOW);
@@ -635,7 +633,7 @@ void dacWrite() {
     dacBuffer[1] = dacValue.byteArray[5];
     dacBuffer[2] = dacValue.byteArray[4];
     SPI.transfer(dacBuffer,3);
-    digitalWrite(SyncPin,HIGH);
+    digitalWriteFast(SyncPin,HIGH);
   }
   if (playing[3]) {
     digitalWrite(SyncPin,LOW);
@@ -643,9 +641,9 @@ void dacWrite() {
     dacBuffer[1] = dacValue.byteArray[7];
     dacBuffer[2] = dacValue.byteArray[6];
     SPI.transfer(dacBuffer,3);
-    digitalWrite(SyncPin,HIGH); 
+    digitalWriteFast(SyncPin,HIGH); 
   }
-  digitalWrite(LDACPin,LOW);
+  digitalWriteFast(LDACPin,LOW);
 }
 
 void zeroDAC() {
