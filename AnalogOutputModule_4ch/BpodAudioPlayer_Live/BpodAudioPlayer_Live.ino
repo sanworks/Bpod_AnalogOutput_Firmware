@@ -34,7 +34,7 @@ char moduleName[] = "AudioPlayer"; // Name of module for manual override UI and 
 
 // Parameters
 const byte maxWaves = 20; // Maximum number of waveforms (used to set up data buffers and to ensure data file is large enough)
-const uint32_t bufSize = 2000; //1280; // Buffer size (in samples). Larger buffers prevent underruns, but take up memory.
+const uint32_t bufSize = 2000; // Buffer size (in samples). Larger buffers prevent underruns, but take up memory.
                                     // Each wave in MaxWaves is allocated 1 buffer worth of sRAM (Teensy 3.6 total sRAM = 256k)
 const uint32_t maxWaveSize = 1000000; // Maximum number of samples per waveform
 const uint16_t maxEnvelopeSize = 10000; // Maximum size of AM onset/offset envelope (in samples)
@@ -75,6 +75,7 @@ boolean sendBpodEvents = false; // Sends a byte to Bpod state machine, to indica
 uint32_t channelTime = 0; // Time (in samples) since loop was triggered (used to compute looped playback end)
 byte waveIndex = 0; // Index of current waveform used for local op (1-maxWaves; maxWaves is in the "parameters" section above) Note: iWavePlaying = current playback waveform
 byte wave2Play = 0; // Index of waveform being triggered (before playback begins)
+byte wave2Stop = 0; // Index of waveform to stop (For BControl use only)
 byte channelIndex = 0; // Index of current output channel (1-4)
 const uint32_t maxWaveSizeBytes = maxWaveSize*4; // Maximum size of a stereo waveform in bytes (maxWaveSize is in the "parameters" section above)
 const int bufSizeBytes = bufSize*2; // Size of the buffer in bytes (bufSizeBytes is in the "parameters" section above)
@@ -343,12 +344,15 @@ void handler(){ // The handler is triggered precisely every timerPeriod microsec
             fileTransferBuffer[i] = 0;
           }
           Wave0.close();
+          SD.remove("Wave0.wfm");
           Wave0 = SD.open("Wave0.wfm", FILE_WRITE);
           Wave0.seek(0); // Set write position to first byte
-          for (unsigned long longInd = 0; longInd < (bufferSideBOffset*2)/fileTransferBufferSize; longInd++) {
+          for (uint32_t i = 0; i < (bufferSideBOffset*2)/loadingFileBufferSize; i++) {
             Wave0.write(fileTransferBuffer,fileTransferBufferSize); // Write fileTransferBufferSize zeros
           }
+          delayMicroseconds(100000);
           Wave0.close();
+          Wave0 = SD.open("Wave0.wfm", FILE_WRITE);
           USBCOM.writeByte(1); // Acknowledge
         }
       break;
@@ -470,16 +474,16 @@ void handler(){ // The handler is triggered precisely every timerPeriod microsec
           currentLoopMode = loopMode[wave2Play];
       break;
       case 'X': // Stop all playback
-        if (useAMEnvelope) {
-          inFadeOut = true;
-          envelopeDir = 1;
-          startEnvelope();
-        } else {
-          zeroDAC();
-          if (swapScheduled) {
-            swapBuffers();
-            swapScheduled = false;
-          }
+        stopPlayback();
+      break;
+      case 'x': // Stop a specific sound (for BControl compatability)
+        if (opSource == 0) {
+          wave2Stop = USBCOM.readByte();
+        } else if (opSource == 1) {
+          wave2Stop = Serial1COM.readByte();
+        }
+        if (wave2Stop == wave2Play) {
+          stopPlayback();
         }
       break;    
       case 'S':
@@ -710,6 +714,7 @@ void startPlayback(byte thisWave) {
     }
     skipLoading = 2;
 }
+     
 void startPlaybackMaster(byte thisWave) { // In Master mode, swap waveforms immediately (no countdown2Play)
     iWavePlaying = thisWave; 
     bufLoaded = currentLoadBuffer[thisWave];
@@ -729,6 +734,23 @@ void startPlaybackMaster(byte thisWave) { // In Master mode, swap waveforms imme
     }
     skipLoading = 2;
 }
+
+void stopPlayback() {
+  if (useAMEnvelope) {
+    if (inFadeOut == false) {
+      inFadeOut = true;
+      envelopeDir = 1;
+      startEnvelope();
+    }
+  } else {
+    zeroDAC();
+    if (swapScheduled) {
+      swapBuffers();
+      swapScheduled = false;
+    }
+  }
+}
+
 void resetChannel() { // Resets playback to first sample (in loop mode)
     currentPlaySample = 0;
     currentPlayBuffer = 1;
