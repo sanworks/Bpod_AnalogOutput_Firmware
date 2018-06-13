@@ -370,7 +370,9 @@ void handler(){ // The handler is triggered precisely every timerPeriod microsec
           for (unsigned long longInd = 0; longInd < (maxWaves*maxWaveSize*2)/fileTransferBufferSize; longInd++) {
             Wave0.write(fileTransferBuffer,fileTransferBufferSize); // Write fileTransferBufferSize zeros
           }
+          delayMicroseconds(100000);
           Wave0.close();
+          Wave0 = SD.open("Wave0.wfm", FILE_WRITE);
           USBCOM.writeByte(1); // Acknowledge
         }
       break;
