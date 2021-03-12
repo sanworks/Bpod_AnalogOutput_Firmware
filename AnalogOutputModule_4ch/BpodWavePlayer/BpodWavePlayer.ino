@@ -27,7 +27,7 @@
 #include "SdFat.h"
 SdFatSdioEX SD;
 
-#define FirmwareVersion 1
+#define FirmwareVersion 2
 
 // Module setup
 char moduleName[] = "WavePlayer"; // Name of module for manual override UI and state machine assembler
@@ -234,6 +234,14 @@ void handler(){ // The handler is triggered precisely every timerPeriod microsec
       case 255: // Return Bpod module info
         if (opSource == 1) { // Only returns this info if requested from state machine device
           returnModuleInfo();
+        }
+      break;
+      case 254: // Relay test byte from USB to echo module, or from echo module back to USB 
+        if (opSource == 0) {
+          Serial2COM.writeByte(254);
+        }
+        if (opSource == 2) {
+          USBCOM.writeByte(254);
         }
       break;
       case 'N': // Return playback params
@@ -535,14 +543,14 @@ void handler(){ // The handler is triggered precisely every timerPeriod microsec
       }
       currentSample[i]++;
       channelTime[i]++;
-      if (currentSample[i] > nSamples[waveLoaded[i]]) {
+      if (currentSample[i] == nSamples[waveLoaded[i]]) {
         if (loopMode[i]) {
           resetChannel(i);
-        } else {
-          schedulePlaybackStop[i] = true;
-          filePos[i] = maxWaveSize*waveLoaded[i];
-          dacValue.uint16[i] = DACBits_ZeroVolts;
         }
+      } else if (currentSample[i] == nSamples[waveLoaded[i]]+1) {
+        schedulePlaybackStop[i] = true;
+        filePos[i] = maxWaveSize*waveLoaded[i];
+        dacValue.uint16[i] = DACBits_ZeroVolts;
       }
       if (loopMode[i]) {
         if (channelTime[i] > loopDuration[i]) {
