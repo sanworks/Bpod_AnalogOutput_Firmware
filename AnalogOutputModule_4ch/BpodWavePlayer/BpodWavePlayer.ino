@@ -96,6 +96,7 @@ unsigned short DACBits_ZeroVolts = 32768; // Code (in bits) for 0V. For bipolar 
 byte countdown2Play[nChannels] = {0}; // Set to 2 if a channel has been triggered, and needs to begin playback in 2 cycles. Set to 1 on next cycle, etc.
                                       // This ensures that a cycle burdened with serial reads and triggering logic does not also update the channel voltage.
                                       // The phenotype, if too few cycles are skipped, is a short first sample. 
+uint16_t fixedVoltage = 0; // Fixed voltage read from '!' op
 
 // Communication variables
 const int BpodSerialBaudRate = 1312500; // Communication rate for Bpod UART channel
@@ -477,12 +478,38 @@ void handler(){ // The handler is triggered precisely every timerPeriod microsec
       case 'X': // Stop all playback
         zeroDAC();
       break;    
-      case 'S':
+      case 'S': // Set sampling rate
       if (opSource == 0) {
         USBCOM.readByteArray(timerPeriod.byteArray, 4);
         hardwareTimer.end();
         hardwareTimer.begin(handler, timerPeriod.floatVal);
       }
+      break;
+      case 129 ... 143: // Set a fixed voltage on output channels indicated by lowest 4 bits of op code(will be overridden by next call to play a waveform on the same channel(s))
+        switch(opSource) {
+          case 0:
+            fixedVoltage = USBCOM.readUint16(); // Voltage bits
+          break;
+          case 1:
+            fixedVoltage = Serial1COM.readUint16(); // Voltage bits
+          break;
+        }
+        byte targetChannelBits = opCode - 128; // Bits indicate channels to trigger
+        for (int i = 0; i < nChannels; i++) {
+          if (bitRead(targetChannelBits, i)) {
+            playing[i] = 1;
+            dacValue.uint16[i] = fixedVoltage;
+          }
+        }
+        dacWrite();
+        for (int i = 0; i < nChannels; i++) {
+          if (bitRead(targetChannelBits,i)) {
+            playing[i] = 0;
+          }
+        }
+        if (opSource == 0) {
+          USBCOM.writeByte(1);
+        }
       break;
     }
   }
