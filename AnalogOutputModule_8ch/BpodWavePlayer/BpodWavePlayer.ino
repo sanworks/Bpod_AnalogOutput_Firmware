@@ -2,7 +2,7 @@
   ----------------------------------------------------------------------------
 
   This file is part of the Sanworks Bpod_Gen2 repository
-  Copyright (C) 2017 Sanworks LLC, Stony Brook, New York, USA
+  Copyright (C) 2021 Sanworks LLC, Rochester, New York, USA
 
   ----------------------------------------------------------------------------
 
@@ -19,20 +19,23 @@
 
 */
 
-// IMPORTANT: Requires the SDFat-Beta library from:
-// https://github.com/greiman/SdFat-beta/tree/master/SdFat
+// **NOTE** previous versions of this firmware required dependencies and modifications to the Teensy core files. As of firmware v3, these are no longer necessary.
+// **NOTE** Requires Arduino 1.8.15 or newer, and Teensyduino 1.5.4
 
 #include "ArCOM.h"
 #include <SPI.h>
 #include "SdFat.h"
-SdFatSdioEX SD;
-#define SERIAL_TX_BUFFER_SIZE 256
-#define SERIAL_RX_BUFFER_SIZE 256
 
-#define FirmwareVersion 2
+#define FirmwareVersion 3
+
+// SD objects
+SdFs SDcard;
+FsFile Wave0; // File on microSD card, to store waveform data
+bool ready = false; // Indicates if SD is busy (for use with SDBusy() funciton)
 
 // Module setup
 char moduleName[] = "WavePlayer"; // Name of module for manual override UI and state machine assembler
+byte StateMachineSerialBuf[192] = {0}; // Extra memory for state machine serial buffer
 
 // Parameters
 const byte nChannels = 8; // Number of analog output channels
@@ -58,7 +61,6 @@ const byte LDACPin2=39; // AD5754 Pin 10 (LDAC)
 // System objects
 SPISettings DACSettings(30000000, MSBFIRST, SPI_MODE2); // Settings for DAC
 IntervalTimer hardwareTimer; // Hardware timer to ensure even sampling
-File Wave0; // File on microSD card, to store waveform data
 
 // Playback variables
 byte opCode = 0; // Serial inputs access an op menu. The op code byte stores the intended operation.
@@ -97,6 +99,8 @@ unsigned short DACBits_ZeroVolts = 32768; // Code (in bits) for 0V. For bipolar 
 byte countdown2Play[nChannels] = {0}; // Set to 2 if a channel has been triggered, and needs to begin playback in 2 cycles. Set to 1 on next cycle, etc.
                                       // This ensures that a cycle burdened with serial reads and triggering logic does not also update the channel voltage.
                                       // The phenotype, if too few cycles are skipped, is a short first sample. 
+uint16_t fixedVoltage = 0; // Fixed voltage to set on a set of target channels (ops 128-143)
+                                      
 boolean dac2Active = true; // Set automatically to false if sampling rate is too high to support ch4-8
 
 // Communication variables
@@ -189,6 +193,7 @@ unsigned long partialReadSize = 0;
 void setup() {
   Serial2.begin(1312500);
   Serial3.begin(1312500);
+  Serial3.addMemoryForRead(StateMachineSerialBuf, 192);
   pinMode(RefEnable1, OUTPUT); // Reference enable pin sets the external reference IC output to 3V (RefEnable=high) or high impedence (RefEnable = low)
   digitalWrite(RefEnable1, LOW); // Disabling external reference IC allows other voltage ranges with DAC internal reference
   pinMode(SyncPin1, OUTPUT); // Configure SPI bus pins as outputs
@@ -197,6 +202,12 @@ void setup() {
   digitalWrite(RefEnable2, LOW); // Disabling external reference IC allows other voltage ranges with DAC internal reference
   pinMode(SyncPin2, OUTPUT); // Configure SPI bus pins as outputs
   pinMode(LDACPin2, OUTPUT);
+  SDcard.begin(SdioConfig(FIFO_SDIO));
+  SDcard.remove("Wave0.wfm");
+  Wave0 = SDcard.open("Wave0.wfm", O_RDWR | O_CREAT);
+  Wave0.preAllocate(maxWaves*maxWaveSize*2);
+  while (sdBusy()) {}
+  Wave0.seek(0);
   SPI.begin(); // Initialize SPI interface
   SPI.beginTransaction(DACSettings); // Set SPI parameters to DAC speed and bit order
   digitalWrite(LDACPin1, LOW); // Ensure DAC load pin is at default level (low)
@@ -204,7 +215,6 @@ void setup() {
   ProgramDAC(16, 0, 31); // Power up all channels + internal ref)
   ProgramDAC(12, 0, 3); // Set output range to +/- 5V
   zeroDAC(); // Set all DAC channels to 0V
-  SD.begin(); // Initialize microSD card
   timerPeriod.floatVal = 100; // Set a default sampling rate (10kHz)
   hardwareTimer.begin(handler, timerPeriod.floatVal); // hardwareTimer is an interval timer object - Teensy 3.6's hardware timer
 }
@@ -368,19 +378,9 @@ void handler(){ // The handler is triggered precisely every timerPeriod microsec
       }
       USBCOM.writeByte(1); // Acknowledge
       break;
-      case 'Y': // Create and/or Clear data file on microSD card, with enough space to store all waveforms (to be optimized for speed)
+      case 'Y': // Depricated function to set up data file on microSD card, with enough space to store all waveforms
         if (opSource == 0) {
-          for (int i = 0; i < fileTransferBufferSize; i++) {
-            fileTransferBuffer[i] = 0;
-          }
-          Wave0 = SD.open("Wave0.wfm", FILE_WRITE);
-          Wave0.seek(0); // Set write position to first byte
-          for (unsigned long longInd = 0; longInd < (maxWaves*maxWaveSize*2)/fileTransferBufferSize; longInd++) {
-            Wave0.write(fileTransferBuffer,fileTransferBufferSize); // Write fileTransferBufferSize zeros
-          }
-          delayMicroseconds(100000);
-          Wave0.close();
-          Wave0 = SD.open("Wave0.wfm", FILE_WRITE);
+          // ***NOTE*** Firmware now runs microSD setup on boot. This op's ack byte is retained for backwards compatability with old code.
           USBCOM.writeByte(1); // Acknowledge
         }
       break;
@@ -440,7 +440,6 @@ void handler(){ // The handler is triggered precisely every timerPeriod microsec
           waveIndex = USBCOM.readByte();
           if (waveIndex < maxWaves) { // Sanity check
             nSamples[waveIndex] = USBCOM.readUint32();
-            Wave0 = SD.open("Wave0.wfm", FILE_WRITE);
             Wave0.seek(maxWaveSizeBytes*waveIndex);
             nFullReads = (unsigned long)(floor((double)nSamples[waveIndex]*2/(double)fileTransferBufferSize));
             for (int i = 0; i < nFullReads; i++) {
@@ -469,9 +468,7 @@ void handler(){ // The handler is triggered precisely every timerPeriod microsec
                 }
               }
             }         
-            Wave0.close();
             USBCOM.writeByte(1);
-            Wave0 = SD.open("Wave0.wfm", FILE_READ);
           }
         }
       break;
@@ -557,7 +554,7 @@ void handler(){ // The handler is triggered precisely every timerPeriod microsec
       case 'X': // Stop all playback
         zeroDAC();
       break;    
-      case 'S':
+      case 'S': // Set sampling rate
       if (opSource == 0) {
         USBCOM.readByteArray(timerPeriod.byteArray, 4);
         hardwareTimer.end();
@@ -568,6 +565,32 @@ void handler(){ // The handler is triggered precisely every timerPeriod microsec
         }
         hardwareTimer.begin(handler, timerPeriod.floatVal);
       }
+      break;
+      case 129 ... 143: // Set a fixed voltage on output channels indicated by lowest 4 bits of op code(will be overridden by next call to play a waveform on the same channel(s))
+        switch(opSource) {
+          case 0:
+            fixedVoltage = USBCOM.readUint16(); // Voltage bits
+          break;
+          case 1:
+            fixedVoltage = Serial1COM.readUint16(); // Voltage bits
+          break;
+        }
+        byte targetChannelBits = opCode - 128; // Bits indicate channels to trigger
+        for (int i = 0; i < nChannels; i++) {
+          if (bitRead(targetChannelBits, i)) {
+            playing[i] = 1;
+            dacValue.uint16[i] = fixedVoltage;
+          }
+        }
+        dacWrite();
+        for (int i = 0; i < nChannels; i++) {
+          if (bitRead(targetChannelBits,i)) {
+            playing[i] = 0;
+          }
+        }
+        if (opSource == 0) {
+          USBCOM.writeByte(1);
+        }
       break;
     }
   }
@@ -659,7 +682,7 @@ void handler(){ // The handler is triggered precisely every timerPeriod microsec
         if (loopMode[i]) {
           resetChannel(i);
         } 
-      } elseif (currentSample[i] == nSamples[waveLoaded[i]]+1) {
+      } else if (currentSample[i] == nSamples[waveLoaded[i]]+1) {
         schedulePlaybackStop[i] = true;
         filePos[i] = maxWaveSize*waveLoaded[i];
         dacValue.uint16[i] = DACBits_ZeroVolts;
@@ -850,6 +873,12 @@ void resetChannel(byte channel) { // Resets playback to first sample (in loop mo
       preBufferActive[channel] = true;
       filePos[channel] = (maxWaveSizeBytes*waveLoaded[channel]) + bufSizeBytes;
 }
+
+
+bool sdBusy() {
+  return ready ? SDcard.card()->isBusy() : false;
+}
+
 void returnModuleInfo() {
   Serial1COM.writeByte(65); // Acknowledge
   Serial1COM.writeUint32(FirmwareVersion); // 4-byte firmware version

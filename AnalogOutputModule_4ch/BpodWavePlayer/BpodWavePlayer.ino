@@ -19,14 +19,14 @@
 
 */
 
-// **NOTE** previous versions of this firmware required dependencies and modifications to the Teensy core files. As of firmware v4, these are no longer necessary.
-// **NOTE** Requires Arduino 1.8.13 or newer, and Teensyduino 1.5.4 (tested on 1.5.4 beta 7)
+// **NOTE** previous versions of this firmware required dependencies and modifications to the Teensy core files. As of firmware v3, these are no longer necessary.
+// **NOTE** Requires Arduino 1.8.15 or newer, and Teensyduino 1.5.4
 
 #include "ArCOM.h"
 #include <SPI.h>
 #include "SdFat.h"
 
-#define FirmwareVersion 2
+#define FirmwareVersion 3
 
 // SD objects
 SdFs SDcard;
@@ -96,7 +96,7 @@ unsigned short DACBits_ZeroVolts = 32768; // Code (in bits) for 0V. For bipolar 
 byte countdown2Play[nChannels] = {0}; // Set to 2 if a channel has been triggered, and needs to begin playback in 2 cycles. Set to 1 on next cycle, etc.
                                       // This ensures that a cycle burdened with serial reads and triggering logic does not also update the channel voltage.
                                       // The phenotype, if too few cycles are skipped, is a short first sample. 
-uint16_t fixedVoltage = 0; // Fixed voltage read from '!' op
+uint16_t fixedVoltage = 0; // Fixed voltage to set on a set of target channels (ops 128-143)
 
 // Communication variables
 const int BpodSerialBaudRate = 1312500; // Communication rate for Bpod UART channel
