@@ -2,7 +2,7 @@
   ----------------------------------------------------------------------------
 
   This file is part of the Sanworks Bpod_Gen2 repository
-  Copyright (C) 2017 Sanworks LLC, Stony Brook, New York, USA
+  Copyright (C) 2022 Sanworks LLC, Rochester, New York, USA
 
   ----------------------------------------------------------------------------
 
@@ -21,26 +21,15 @@
 
 // PulseGenerator firmware for Bpod Analog Output Module
 // Derived from Pulse Pal firmware v2.0.1
-// Josh Sanders, May 2017
+// Josh Sanders, May 2022
 //
-// ** DEPENDENCIES YOU NEED TO INSTALL FIRST **
-
-// 1. This firmware uses the sdFat beta library, developed by Bill Greiman. (Thanks Bill!!)
-// Download it from here: https://github.com/greiman/SdFat-beta/tree/master/SdFat
-// and copy it to your /Arduino/Libraries folder.
-// 2. This firmware requires Teensyduino. Download and install from here:
-// https://www.pjrc.com/teensy/teensyduino.html
-
-// ** Next, upload the firmware to the Bpod analog output module **
+// **NOTE** previous versions of this firmware required dependencies and modifications to the Teensy core files. As of firmware v3, these are no longer necessary.
+// **NOTE** Requires Arduino 1.8.15 or newer, and Teensyduino 1.5.4 or newer
 
 #include "ArCOM.h"
 #include <SPI.h>
-#include "SdFat.h"
-SdFatSdioEX SD;
-#define SERIAL_TX_BUFFER_SIZE 256
-#define SERIAL_RX_BUFFER_SIZE 256
 
-#define FirmwareVersion 1
+#define FirmwareVersion 2
 
 // Module setup
 char moduleName[] = "PulsePal"; // Name of module for manual override UI and state machine assembler
@@ -49,6 +38,7 @@ const byte nChannels = 8;
 const byte nCustomPulseTrains = 2;
 
 // Create an ArCOM USB serial port object (to streamline transfer of different datatypes and arrays over serial)
+byte StateMachineSerialBuf[192] = {0}; // Extra memory for state machine serial buffer
 ArCOM PPUSB(Serial);
 ArCOM Serial1COM(Serial3); // Creates an ArCOM object called Serial1COM, wrapping Serial3
 ArCOM Serial2COM(Serial2);
@@ -158,7 +148,7 @@ void setup() {
   zeroDAC(); // Set all DAC channels to 0V
   Serial2.begin(1312500);
   Serial3.begin(1312500);
-  SD.begin(); // Initialize microSD card
+  Serial3.addMemoryForRead(StateMachineSerialBuf, 192);
   LoadDefaultParameters();
   maxCommandByte = pow(2,nChannels); // Except for module code 255, command bytes above this are ignored
   SystemTime = 0;

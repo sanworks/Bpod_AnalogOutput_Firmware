@@ -20,7 +20,7 @@
 */
 
 // **NOTE** previous versions of this firmware required dependencies and modifications to the Teensy core files. As of firmware v3, these are no longer necessary.
-// **NOTE** Requires Arduino 1.8.15 or newer, and Teensyduino 1.5.4
+// **NOTE** Requires Arduino 1.8.15 or newer, and Teensyduino 1.5.4 or newer
 
 #include "ArCOM.h"
 #include <SPI.h>
