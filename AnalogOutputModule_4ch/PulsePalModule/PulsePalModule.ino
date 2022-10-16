@@ -135,9 +135,11 @@ void setup() {
   SPI.begin(); // Initialize SPI interface
   SPI.beginTransaction(DACSettings); // Set SPI parameters to DAC speed and bit order
   digitalWrite(LDACPin, LOW); // Ensure DAC load pin is at default level (low)
+  ProgramDAC(24, 0, 0); // NOP
+  zeroDAC(); // Set all DAC channels to 0V
   ProgramDAC(16, 0, 31); // Power up all channels + internal ref)
   ProgramDAC(12, 0, 4); // Set output range to +/- 10V
-  zeroDAC(); // Set all DAC channels to 0V
+  zeroDAC(); // Set all DAC channels to 0V (again)
   Serial2.begin(1312500);
   Serial3.begin(1312500);
   Serial3.addMemoryForRead(StateMachineSerialBuf, 192);
