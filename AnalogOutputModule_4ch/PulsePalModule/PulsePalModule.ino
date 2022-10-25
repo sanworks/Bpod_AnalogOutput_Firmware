@@ -189,7 +189,7 @@ void handler(void) {
           if (CommandByte < maxCommandByte) {
             for (int i = 0; i < nChannels; i++) {
               if (((StimulusStatus[i] == 1) || (PreStimulusStatus[i] == 1))) {
-                if (TriggerMode[0] == 1) {
+                if ((TriggerMode[0] == 1) && bitRead(CommandByte, i)) {
                   killChannel(i);
                 }
               } else {
@@ -299,7 +299,7 @@ void handler(void) {
           inByte2 = PPUSB.readByte();
           for (int i = 0; i < nChannels; i++) {
             if (((StimulusStatus[i] == 1) || (PreStimulusStatus[i] == 1))) {
-              if (TriggerMode[0] == 1) {
+              if ((TriggerMode[0] == 1) && bitRead(inByte2, i)) {
                 killChannel(i);
               }
             } else {

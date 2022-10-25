@@ -21,7 +21,7 @@
 
 // PulseGenerator firmware for Bpod Analog Output Module
 // Derived from Pulse Pal firmware v2.0.1
-// Josh Sanders, May 2022
+// Josh Sanders, October 2022
 //
 // **NOTE** previous versions of this firmware required dependencies and modifications to the Teensy core files. As of firmware v3, these are no longer necessary.
 // **NOTE** Requires Arduino 1.8.15 or newer, and Teensyduino 1.5.4 or newer
@@ -29,7 +29,7 @@
 #include "ArCOM.h"
 #include <SPI.h>
 
-#define FirmwareVersion 2
+#define FirmwareVersion 3
 
 // Module setup
 char moduleName[] = "PulsePal"; // Name of module for manual override UI and state machine assembler
@@ -197,7 +197,7 @@ void handler(void) {
           if (CommandByte < maxCommandByte) {
             for (int i = 0; i < nChannels; i++) {
               if (((StimulusStatus[i] == 1) || (PreStimulusStatus[i] == 1))) {
-                if (TriggerMode[0] == 1) {
+                if ((TriggerMode[0] == 1) && bitRead(CommandByte, i)) {
                   killChannel(i);
                 }
               } else {
@@ -307,7 +307,7 @@ void handler(void) {
           inByte2 = PPUSB.readByte();
           for (int i = 0; i < nChannels; i++) {
             if (((StimulusStatus[i] == 1) || (PreStimulusStatus[i] == 1))) {
-              if (TriggerMode[0] == 1) {
+              if ((TriggerMode[0] == 1) && bitRead(inByte2, i)) {
                 killChannel(i);
               }
             } else {
