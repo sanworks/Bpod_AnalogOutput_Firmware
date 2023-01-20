@@ -2,7 +2,7 @@
   ----------------------------------------------------------------------------
 
   This file is part of the Sanworks Bpod_Gen2 repository
-  Copyright (C) 2017 Sanworks LLC, Stony Brook, New York, USA
+  Copyright (C) 2022 Sanworks LLC, Rochester, New York, USA
 
   ----------------------------------------------------------------------------
 
@@ -20,7 +20,6 @@
 */
 
 // PulseGenerator firmware for Bpod Analog Output Module
-// Derived from Pulse Pal firmware v2.0.1
 // Josh Sanders, May 2022
 //
 // **NOTE** previous versions of this firmware required dependencies and modifications to the Teensy core files. As of firmware v3, these are no longer necessary.
@@ -29,18 +28,28 @@
 #include "ArCOM.h"
 #include <SPI.h>
 
-#define FirmwareVersion 2
+#define FIRMWARE_VERSION 3
+#define HARDWARE_VERSION 2 // Use: 1 = AOM rev 1.0-1.4 (as marked on PCB), 2 = AOM rev 2.0
 
 // Module setup
-char moduleName[] = "PulsePal"; // Name of module for manual override UI and state machine assembler
+char moduleName[] = "PulsePal"; // Name of module for the manual override UI and state machine assembler
 byte CycleDuration = 100; // in microseconds, time between hardware cycles (each cycle = read trigger channels, update output channels)
 const byte nChannels = 4;
+byte circuitRevision = 0; // Circuit board revision, encoded as bits in an array of pins; 1 = grounded, 0 = floating (no connection)
+const byte circuitRevisionArray[5] = {25,26,27,28,29};
 
 // Create an ArCOM USB serial port object (to streamline transfer of different datatypes and arrays over serial)
 byte StateMachineSerialBuf[192] = {0}; // Extra memory for state machine serial buffer
-ArCOM PPUSB(Serial);
-ArCOM Serial1COM(Serial3); // Creates an ArCOM object called Serial1COM, wrapping Serial3
-ArCOM Serial2COM(Serial2);
+
+// Wrap serial interfaces
+ArCOM USBCOM(Serial); // Creates an ArCOM object called USBCOM, wrapping Serial (for Teensy 3.6)
+#if HARDWARE_VERSION == 1
+  ArCOM Serial1COM(Serial3); // Creates an ArCOM object called Serial1COM, wrapping Serial3
+  ArCOM Serial2COM(Serial2); 
+#else
+  ArCOM Serial1COM(Serial1); // Creates an ArCOM object called Serial1COM, wrapping Serial1
+  ArCOM Serial2COM(Serial2); 
+#endif
 
 // Pin definitions
 const byte RefEnable = 32; // External 3V reference enable pin
@@ -111,6 +120,7 @@ byte DefaultInputLevel = 0; // 0 for PulsePal 0.3, 1 for 0.2 and 0.1. Logic is i
 
 // Other variables
 int ConnectedToApp = 0; // 0 if disconnected, 1 if connected
+volatile boolean usbLoadFlag = false;
 void handler(void);
 boolean SoftTriggered[nChannels] = {0}; // If a software trigger occurred this cycle (for timing reasons, it is scheduled to occur on the next cycle)
 boolean SoftTriggerScheduled[nChannels] = {0}; // If a software trigger is scheduled for the next cycle
@@ -141,8 +151,22 @@ void setup() {
   ProgramDAC(12, 0, 4); // Set output range to +/- 10V
   zeroDAC(); // Set all DAC channels to 0V (again)
   Serial2.begin(1312500);
-  Serial3.begin(1312500);
-  Serial3.addMemoryForRead(StateMachineSerialBuf, 192);
+  #if HARDWARE_VERSION == 1
+    Serial3.begin(1312500);
+    Serial3.addMemoryForRead(StateMachineSerialBuf, 192);
+  #else
+    Serial1.begin(1312500);
+    Serial1.addMemoryForRead(StateMachineSerialBuf, 192);
+  #endif
+  // Read hardware revision from circuit board (an array of grounded pins indicates revision in binary, grounded = 1, floating = 0)
+  circuitRevision = 0;
+  for (int i = 0; i < 5; i++) {
+    pinMode(circuitRevisionArray[i], INPUT_PULLUP);
+    delay(1);
+    circuitRevision += pow(2, i)*digitalRead(circuitRevisionArray[i]);
+    pinMode(circuitRevisionArray[i], INPUT);
+  }
+  circuitRevision = 31-circuitRevision;
   LoadDefaultParameters();
   maxCommandByte = pow(2,nChannels); // Except for module code 255, command bytes above this are ignored
   SystemTime = 0;
@@ -152,7 +176,10 @@ void setup() {
 }
 
 void loop() {
-
+  if (usbLoadFlag) {
+    loadParams();
+    usbLoadFlag = false;
+  }
 }
 
 void handler(void) {                     
@@ -200,70 +227,45 @@ void handler(void) {
         break;
      }
   }
-  if (PPUSB.available()) { // If bytes are available in the serial port buffer
-    CommandByte = PPUSB.readByte(); // Read a byte
+  if (USBCOM.available() && !usbLoadFlag) { // If bytes are available in the serial port buffer
+    CommandByte = USBCOM.readByte(); // Read a byte
     if (CommandByte == OpMenuByte) { // The first byte must be 213. Now, read the actual command byte. (Reduces interference from port scanning applications)
-      CommandByte = PPUSB.readByte(); // Read the command byte (an op code for the operation to execute)
+      CommandByte = USBCOM.readByte(); // Read the command byte (an op code for the operation to execute)
       switch (CommandByte) {
         case 72: { // Handshake
-          PPUSB.writeByte(75); // Send 'K' (as in ok)
-          PPUSB.writeUint32(FirmwareVersion); // Send the firmware version as a 4 byte unsigned integer
+          USBCOM.writeByte(75); // Send 'K' (as in ok)
+          USBCOM.writeUint32(FIRMWARE_VERSION); // Send the firmware version as a 4 byte unsigned integer
           ConnectedToApp = 1;
         } break;
         case 73: { // Program the module - total program (can be faster than item-wise, if many parameters have changed)
-          PPUSB.readUint32Array(Phase1Duration, nChannels);
-          PPUSB.readUint32Array(InterPhaseInterval, nChannels);
-          PPUSB.readUint32Array(Phase2Duration, nChannels);
-          PPUSB.readUint32Array(InterPulseInterval, nChannels);
-          PPUSB.readUint32Array(BurstDuration, nChannels);
-          PPUSB.readUint32Array(BurstInterval, nChannels);
-          PPUSB.readUint32Array(PulseTrainDuration, nChannels);
-          PPUSB.readUint32Array(PulseTrainDelay, nChannels);
-          PPUSB.readUint16Array(Phase1Voltage, nChannels);
-          PPUSB.readUint16Array(Phase2Voltage, nChannels);
-          PPUSB.readUint16Array(RestingVoltage, nChannels);
-          PPUSB.readByteArray(IsBiphasic, nChannels);
-          PPUSB.readByteArray(CustomTrainID, nChannels);
-          PPUSB.readByteArray(CustomTrainTarget, nChannels);
-          PPUSB.readByteArray(CustomTrainLoop, nChannels);
-         PPUSB.readByteArray(TriggerMode, 1);
-         PPUSB.writeByte(1); // Send confirm byte
-         for (int x = 0; x < nChannels; x++) {
-           if ((BurstDuration[x] == 0) || (BurstInterval[x] == 0)) {UsesBursts[x] = false;} else {UsesBursts[x] = true;}
-           if (CustomTrainTarget[x] == 1) {UsesBursts[x] = true;}
-           if ((CustomTrainID[x] > 0) && (CustomTrainTarget[x] == 0)) {UsesBursts[x] = false;}
-           PulseDuration[x] = ComputePulseDuration(IsBiphasic[x], Phase1Duration[x], InterPhaseInterval[x], Phase2Duration[x]);
-           if ((CustomTrainID[x] > 0) && (CustomTrainTarget[x] == 1)) {
-            IsCustomBurstTrain[x] = 1;
-           } else {
-            IsCustomBurstTrain[x] = 0;
-           }
-           dacValue.uint16[x] = RestingVoltage[x];
-         }
-         dacWrite();
+          if (HARDWARE_VERSION == 1) {
+            loadParams();
+          } else {
+            usbLoadFlag = true;
+          }
         } break;
         
         case 74: { // Program one parameter, one channel
-          inByte2 = PPUSB.readByte();
-          inByte3 = PPUSB.readByte(); // inByte3 = target channels (1-4)
+          inByte2 = USBCOM.readByte();
+          inByte3 = USBCOM.readByte(); // inByte3 = target channels (1-4)
           inByte3 = inByte3 - 1; // Convert channel for zero-indexing
           switch (inByte2) { 
-             case 1: {IsBiphasic[inByte3] = PPUSB.readByte();} break;
-             case 2: {Phase1Voltage[inByte3] = PPUSB.readUint16();} break;
-             case 3: {Phase2Voltage[inByte3] = PPUSB.readUint16();} break;
-             case 4: {Phase1Duration[inByte3] = PPUSB.readUint32();} break;
-             case 5: {InterPhaseInterval[inByte3] = PPUSB.readUint32();} break;
-             case 6: {Phase2Duration[inByte3] = PPUSB.readUint32();} break;
-             case 7: {InterPulseInterval[inByte3] = PPUSB.readUint32();} break;
-             case 8: {BurstDuration[inByte3] = PPUSB.readUint32();} break;
-             case 9: {BurstInterval[inByte3] = PPUSB.readUint32();} break;
-             case 10: {PulseTrainDuration[inByte3] = PPUSB.readUint32();} break;
-             case 11: {PulseTrainDelay[inByte3] = PPUSB.readUint32();} break;
-             case 14: {CustomTrainID[inByte3] = PPUSB.readByte();} break;
-             case 15: {CustomTrainTarget[inByte3] = PPUSB.readByte();} break;
-             case 16: {CustomTrainLoop[inByte3] = PPUSB.readByte();} break;
-             case 17: {RestingVoltage[inByte3] = PPUSB.readUint16();} break;
-             case 128: {TriggerMode[inByte3] = PPUSB.readByte();} break;
+             case 1: {IsBiphasic[inByte3] = USBCOM.readByte();} break;
+             case 2: {Phase1Voltage[inByte3] = USBCOM.readUint16();} break;
+             case 3: {Phase2Voltage[inByte3] = USBCOM.readUint16();} break;
+             case 4: {Phase1Duration[inByte3] = USBCOM.readUint32();} break;
+             case 5: {InterPhaseInterval[inByte3] = USBCOM.readUint32();} break;
+             case 6: {Phase2Duration[inByte3] = USBCOM.readUint32();} break;
+             case 7: {InterPulseInterval[inByte3] = USBCOM.readUint32();} break;
+             case 8: {BurstDuration[inByte3] = USBCOM.readUint32();} break;
+             case 9: {BurstInterval[inByte3] = USBCOM.readUint32();} break;
+             case 10: {PulseTrainDuration[inByte3] = USBCOM.readUint32();} break;
+             case 11: {PulseTrainDelay[inByte3] = USBCOM.readUint32();} break;
+             case 14: {CustomTrainID[inByte3] = USBCOM.readByte();} break;
+             case 15: {CustomTrainTarget[inByte3] = USBCOM.readByte();} break;
+             case 16: {CustomTrainLoop[inByte3] = USBCOM.readByte();} break;
+             case 17: {RestingVoltage[inByte3] = USBCOM.readUint16();} break;
+             case 128: {TriggerMode[inByte3] = USBCOM.readByte();} break;
           }
           if (inByte2 < 14) {
             if ((BurstDuration[inByte3] == 0) || (BurstInterval[inByte3] == 0)) {UsesBursts[inByte3] = false;} else {UsesBursts[inByte3] = true;}
@@ -280,23 +282,23 @@ void handler(void) {
           } else {
             IsCustomBurstTrain[inByte3] = 0;
           }
-          PPUSB.writeByte(1); // Send confirm byte
+          USBCOM.writeByte(1); // Send confirm byte
         } break;
   
         case 75: { // Program custom pulse train
-          inByte2 = PPUSB.readByte(); // train Index
-          CustomTrainNpulses[inByte2] = PPUSB.readUint32();
+          inByte2 = USBCOM.readByte(); // train Index
+          CustomTrainNpulses[inByte2] = USBCOM.readUint32();
           for (int x = 0; x < CustomTrainNpulses[inByte2]; x++) {
-            CustomPulseTimes[inByte2][x] = PPUSB.readUint32();
+            CustomPulseTimes[inByte2][x] = USBCOM.readUint32();
           }
           for (int x = 0; x < CustomTrainNpulses[inByte2]; x++) {
-            CustomVoltages[inByte2][x] = PPUSB.readUint16();
+            CustomVoltages[inByte2][x] = USBCOM.readUint16();
           }
-          PPUSB.writeByte(1); // Send confirm byte
+          USBCOM.writeByte(1); // Send confirm byte
         } break;     
         
         case 77: { // Soft-trigger specific output channels. Which channels are indicated as bits of a single byte read.
-          inByte2 = PPUSB.readByte();
+          inByte2 = USBCOM.readByte();
           for (int i = 0; i < nChannels; i++) {
             if (((StimulusStatus[i] == 1) || (PreStimulusStatus[i] == 1))) {
               if ((TriggerMode[0] == 1) && bitRead(inByte2, i)) {
@@ -308,12 +310,12 @@ void handler(void) {
           }
         } break;
         case 79: { // Write specific voltage to an output channel (not a pulse train) 
-          byte myChannel = PPUSB.readByte();
+          byte myChannel = USBCOM.readByte();
           myChannel = myChannel - 1; // Convert for zero-indexing
-          uint16_t val = PPUSB.readUint16();
+          uint16_t val = USBCOM.readUint16();
           dacValue.uint16[myChannel] = val;
           dacWrite();
-          PPUSB.writeByte(1); // Send confirm byte
+          USBCOM.writeByte(1); // Send confirm byte
         } break;
         case 80: { // Soft-abort ongoing stimulation without disconnecting from client
          for (int i = 0; i < nChannels; i++) {
@@ -329,8 +331,8 @@ void handler(void) {
           dacWrite();
          } break;
         case 82:{ // Set Continuous Loop mode (play the current parametric pulse train indefinitely)
-          inByte2 = PPUSB.readByte(); // State (0 = off, 1 = on)
-          inByte3 = PPUSB.readByte(); // Channel
+          inByte2 = USBCOM.readByte(); // State (0 = off, 1 = on)
+          inByte3 = USBCOM.readByte(); // Channel
           ContinuousLoopMode[inByte3] = inByte2;
           if (inByte2) {
             SoftTriggerScheduled[inByte3] = 1;
@@ -338,40 +340,40 @@ void handler(void) {
             killChannel(inByte3);
           }
           dacWrite();
-          PPUSB.writeByte(1);
+          USBCOM.writeByte(1);
         } break;
         case 86: { // Override Arduino IO Lines (for development and debugging only - may disrupt normal function)
-          inByte2 = PPUSB.readByte();
-          inByte3 = PPUSB.readByte();
+          inByte2 = USBCOM.readByte();
+          inByte3 = USBCOM.readByte();
           pinMode(inByte2, OUTPUT); digitalWrite(inByte2, inByte3);
         } break; 
         
         case 87: { // Direct Read IO Lines (for development and debugging only - may disrupt normal function)
-          inByte2 = PPUSB.readByte();
+          inByte2 = USBCOM.readByte();
           pinMode(inByte2, INPUT);
           delayMicroseconds(10);
           LogicLevel = digitalRead(inByte2);
-          PPUSB.writeByte(LogicLevel);
+          USBCOM.writeByte(LogicLevel);
         } break; 
         case 91: { // Program a parameter on all 4 channels
-          inByte2 = PPUSB.readByte();
+          inByte2 = USBCOM.readByte();
           switch (inByte2) { 
-             case 1: {PPUSB.readByteArray(IsBiphasic, nChannels);} break;
-             case 2: {PPUSB.readUint16Array(Phase1Voltage, nChannels);} break;
-             case 3: {PPUSB.readUint16Array(Phase2Voltage, nChannels);} break;
-             case 4: {PPUSB.readUint32Array(Phase1Duration,nChannels);} break;
-             case 5: {PPUSB.readUint32Array(InterPhaseInterval,nChannels);} break;
-             case 6: {PPUSB.readUint32Array(Phase2Duration, nChannels);} break;
-             case 7: {PPUSB.readUint32Array(InterPulseInterval, nChannels);} break;
-             case 8: {PPUSB.readUint32Array(BurstDuration, nChannels);} break;
-             case 9: {PPUSB.readUint32Array(BurstInterval, nChannels);} break;
-             case 10: {PPUSB.readUint32Array(PulseTrainDuration, nChannels);} break;
-             case 11: {PPUSB.readUint32Array(PulseTrainDelay, nChannels);} break;
-             case 14: {PPUSB.readByteArray(CustomTrainID, nChannels);} break;
-             case 15: {PPUSB.readByteArray(CustomTrainTarget, nChannels);} break;
-             case 16: {PPUSB.readByteArray(CustomTrainLoop, nChannels);} break;
-             case 17: {PPUSB.readUint16Array(RestingVoltage, nChannels);} break;
-             case 128: {PPUSB.readByteArray(TriggerMode, 2);} break;
+             case 1: {USBCOM.readByteArray(IsBiphasic, nChannels);} break;
+             case 2: {USBCOM.readUint16Array(Phase1Voltage, nChannels);} break;
+             case 3: {USBCOM.readUint16Array(Phase2Voltage, nChannels);} break;
+             case 4: {USBCOM.readUint32Array(Phase1Duration,nChannels);} break;
+             case 5: {USBCOM.readUint32Array(InterPhaseInterval,nChannels);} break;
+             case 6: {USBCOM.readUint32Array(Phase2Duration, nChannels);} break;
+             case 7: {USBCOM.readUint32Array(InterPulseInterval, nChannels);} break;
+             case 8: {USBCOM.readUint32Array(BurstDuration, nChannels);} break;
+             case 9: {USBCOM.readUint32Array(BurstInterval, nChannels);} break;
+             case 10: {USBCOM.readUint32Array(PulseTrainDuration, nChannels);} break;
+             case 11: {USBCOM.readUint32Array(PulseTrainDelay, nChannels);} break;
+             case 14: {USBCOM.readByteArray(CustomTrainID, nChannels);} break;
+             case 15: {USBCOM.readByteArray(CustomTrainTarget, nChannels);} break;
+             case 16: {USBCOM.readByteArray(CustomTrainLoop, nChannels);} break;
+             case 17: {USBCOM.readUint16Array(RestingVoltage, nChannels);} break;
+             case 128: {USBCOM.readByteArray(TriggerMode, 2);} break;
           }
           for (int iChan = 0; iChan < nChannels; iChan++) {
             if (inByte2 < 14) {
@@ -397,18 +399,18 @@ void handler(void) {
               IsCustomBurstTrain[iChan] = 0;
             }
           }
-          PPUSB.writeByte(1); // Send confirm byte
+          USBCOM.writeByte(1); // Send confirm byte
           dacWrite();
         } break;
         case 92: {
           sendCurrentParams();
         } break;
         case 95: {
-          PPUSB.writeByte(nChannels);
+          USBCOM.writeByte(nChannels);
         } break;
       }
      }
-    } // End if PPUSB.available()
+    } // End if USBCOM.available()
        
     for (int x = 0; x < nChannels; x++) {
       byte KillChannel = 0;
@@ -757,22 +759,22 @@ unsigned long ComputePulseDuration(byte myBiphasic, unsigned long myPhase1, unsi
 }
 
 void sendCurrentParams() {
-    PPUSB.writeUint32Array(Phase1Duration, nChannels);
-    PPUSB.writeUint32Array(InterPhaseInterval, nChannels);
-    PPUSB.writeUint32Array(Phase2Duration, nChannels);
-    PPUSB.writeUint32Array(InterPulseInterval, nChannels);
-    PPUSB.writeUint32Array(BurstDuration, nChannels);
-    PPUSB.writeUint32Array(BurstInterval, nChannels);
-    PPUSB.writeUint32Array(PulseTrainDuration, nChannels);
-    PPUSB.writeUint32Array(PulseTrainDelay, nChannels);
-    PPUSB.writeUint16Array(Phase1Voltage, nChannels);
-    PPUSB.writeUint16Array(Phase2Voltage, nChannels);
-    PPUSB.writeUint16Array(RestingVoltage, nChannels);
-    PPUSB.writeByteArray(IsBiphasic, nChannels);
-    PPUSB.writeByteArray(CustomTrainID, nChannels);
-    PPUSB.writeByteArray(CustomTrainTarget, nChannels);
-    PPUSB.writeByteArray(CustomTrainLoop, nChannels);
-    PPUSB.writeByteArray(TriggerMode, 1);
+    USBCOM.writeUint32Array(Phase1Duration, nChannels);
+    USBCOM.writeUint32Array(InterPhaseInterval, nChannels);
+    USBCOM.writeUint32Array(Phase2Duration, nChannels);
+    USBCOM.writeUint32Array(InterPulseInterval, nChannels);
+    USBCOM.writeUint32Array(BurstDuration, nChannels);
+    USBCOM.writeUint32Array(BurstInterval, nChannels);
+    USBCOM.writeUint32Array(PulseTrainDuration, nChannels);
+    USBCOM.writeUint32Array(PulseTrainDelay, nChannels);
+    USBCOM.writeUint16Array(Phase1Voltage, nChannels);
+    USBCOM.writeUint16Array(Phase2Voltage, nChannels);
+    USBCOM.writeUint16Array(RestingVoltage, nChannels);
+    USBCOM.writeByteArray(IsBiphasic, nChannels);
+    USBCOM.writeByteArray(CustomTrainID, nChannels);
+    USBCOM.writeByteArray(CustomTrainTarget, nChannels);
+    USBCOM.writeByteArray(CustomTrainLoop, nChannels);
+    USBCOM.writeByteArray(TriggerMode, 1);
 }
 
 void zeroDAC() {
@@ -783,10 +785,56 @@ void zeroDAC() {
   dacWrite(); // Update the DAC, to set all channels to mid-range (0V)
 }
 
+void loadParams() {
+  USBCOM.readUint32Array(Phase1Duration, nChannels);
+  USBCOM.readUint32Array(InterPhaseInterval, nChannels);
+  USBCOM.readUint32Array(Phase2Duration, nChannels);
+  USBCOM.readUint32Array(InterPulseInterval, nChannels);
+  USBCOM.readUint32Array(BurstDuration, nChannels);
+  USBCOM.readUint32Array(BurstInterval, nChannels);
+  USBCOM.readUint32Array(PulseTrainDuration, nChannels);
+  USBCOM.readUint32Array(PulseTrainDelay, nChannels);
+  USBCOM.readUint16Array(Phase1Voltage, nChannels);
+  USBCOM.readUint16Array(Phase2Voltage, nChannels);
+  USBCOM.readUint16Array(RestingVoltage, nChannels);
+  USBCOM.readByteArray(IsBiphasic, nChannels);
+  USBCOM.readByteArray(CustomTrainID, nChannels);
+  USBCOM.readByteArray(CustomTrainTarget, nChannels);
+  USBCOM.readByteArray(CustomTrainLoop, nChannels);
+ USBCOM.readByteArray(TriggerMode, 1);
+ USBCOM.writeByte(1); // Send confirm byte
+ for (int x = 0; x < nChannels; x++) {
+   if ((BurstDuration[x] == 0) || (BurstInterval[x] == 0)) {UsesBursts[x] = false;} else {UsesBursts[x] = true;}
+   if (CustomTrainTarget[x] == 1) {UsesBursts[x] = true;}
+   if ((CustomTrainID[x] > 0) && (CustomTrainTarget[x] == 0)) {UsesBursts[x] = false;}
+   PulseDuration[x] = ComputePulseDuration(IsBiphasic[x], Phase1Duration[x], InterPhaseInterval[x], Phase2Duration[x]);
+   if ((CustomTrainID[x] > 0) && (CustomTrainTarget[x] == 1)) {
+    IsCustomBurstTrain[x] = 1;
+   } else {
+    IsCustomBurstTrain[x] = 0;
+   }
+   dacValue.uint16[x] = RestingVoltage[x];
+ }
+ dacWrite();
+}
+
 void returnModuleInfo() {
+  boolean fsmSupportsHwInfo = false;
+  delayMicroseconds(100);
+  if (Serial1COM.available() == 1) { // FSM firmware v23 or newer sends a second info request byte to indicate that it supports additional ops
+    if (Serial1COM.readByte() == 255) {fsmSupportsHwInfo = true;}
+  }
   Serial1COM.writeByte(65); // Acknowledge
-  Serial1COM.writeUint32(FirmwareVersion); // 4-byte firmware version
+  Serial1COM.writeUint32(FIRMWARE_VERSION); // 4-byte firmware version
   Serial1COM.writeByte(sizeof(moduleName)-1); // Length of module name
   Serial1COM.writeCharArray(moduleName, sizeof(moduleName)-1); // Module name
+  if (fsmSupportsHwInfo) {
+    Serial1COM.writeByte(1); // 1 if more info follows, 0 if not
+    Serial1COM.writeByte('V'); // Op code for: Hardware major version
+    Serial1COM.writeByte(HARDWARE_VERSION); 
+    Serial1COM.writeByte(1); // 1 if more info follows, 0 if not
+    Serial1COM.writeByte('v'); // Op code for: Hardware minor version
+    Serial1COM.writeByte(circuitRevision); 
+  }
   Serial1COM.writeByte(0); // 1 if more info follows, 0 if not
 }
