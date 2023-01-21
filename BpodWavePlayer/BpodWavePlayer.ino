@@ -818,44 +818,6 @@ void ProgramDAC(byte Data1, byte Data2, byte Data3) {
   #endif
 }
 
-
-//void dacWrite() {
-//  digitalWriteFast(LDACPin1,HIGH);
-//  if (playing[0]) {
-//    digitalWriteFast(SyncPin1,LOW);
-//    dacBuffer[0] = 3;
-//    dacBuffer[1] = dacValue.byteArray[1];
-//    dacBuffer[2] = dacValue.byteArray[0];
-//    SPI.transfer(dacBuffer,3);
-//    digitalWriteFast(SyncPin1,HIGH);
-//  }
-//  if (playing[1]) {
-//    digitalWrite(SyncPin1,LOW);
-//    dacBuffer[0] = 2;
-//    dacBuffer[1] = dacValue.byteArray[3];
-//    dacBuffer[2] = dacValue.byteArray[2];
-//    SPI.transfer(dacBuffer,3);
-//    digitalWriteFast(SyncPin1,HIGH);
-//  }
-//  if (playing[2]) {
-//    digitalWrite(SyncPin1,LOW);
-//    dacBuffer[0] = 0;
-//    dacBuffer[1] = dacValue.byteArray[5];
-//    dacBuffer[2] = dacValue.byteArray[4];
-//    SPI.transfer(dacBuffer,3);
-//    digitalWriteFast(SyncPin1,HIGH);
-//  }
-//  if (playing[3]) {
-//    digitalWrite(SyncPin1,LOW);
-//    dacBuffer[0] = 1;
-//    dacBuffer[1] = dacValue.byteArray[7];
-//    dacBuffer[2] = dacValue.byteArray[6];
-//    SPI.transfer(dacBuffer,3);
-//    digitalWriteFast(SyncPin1,HIGH); 
-//  }
-//  digitalWriteFast(LDACPin1,LOW);
-//}
-
 void dacWrite() {
   digitalWrite(LDACPin1,HIGH);
   if (playing[0]) {
