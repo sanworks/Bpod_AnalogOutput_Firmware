@@ -21,18 +21,32 @@
 
 // **NOTE** previous versions of this firmware required dependencies and modifications to the Teensy core files. As of firmware v3, these are no longer necessary.
 // **NOTE** Requires Arduino 1.8.15 or newer, and Teensyduino 1.5.4 or newer
+// **NOTE** As of firmware v3, channel count is set in the setup macros below. Separate firmware for the 8ch board is obsolete.
 
 #include "ArCOM.h"
 #include <SPI.h>
 #include "SdFat.h"
 
+#define FIRMWARE_VERSION 3
+
+// SETUP MACROS TO COMPILE FOR TARGET DEVICE:
+#define HARDWARE_VERSION 1 // Use: 1 = AOM rev 1.0-1.4 (as marked on PCB), 2 = AOM rev 2.0
+#define NUM_CHANNELS 4 // Use: 4 for 4-channel AOM, 8 for 8-channel AOM
+//-------------------------------------------
+
+// Validate macros
+#if (HARDWARE_VERSION > 2)
+#error Error! HARDWARE_VERSION must be either 1 or 2
+#endif
+
+#if !(NUM_CHANNELS == 4 || NUM_CHANNELS == 8)
+#error Error! NUM_CHANNELS must be either 4 or 8
+#endif
+
 // SD objects
 SdFs SDcard;
 FsFile Wave0; // File on microSD card, to store waveform data
 bool ready = false; // Indicates if SD is busy (for use with SDBusy() funciton)
-
-#define FIRMWARE_VERSION 3
-#define HARDWARE_VERSION 2 // Use: 1 = AOM rev 1.0-1.4 (as marked on PCB), 2 = AOM rev 2.0
 
 // Module setup
 char moduleName[] = "AudioPlayer"; // Name of module for manual override UI and state machine assembler
@@ -45,13 +59,15 @@ const byte circuitRevisionArray[5] = {25,26,27,28,29};
   const byte maxWaves = 20; // Maximum number of waveforms (used to set up data buffers and to ensure data file is large enough)
   const uint32_t bufSize = 2000; // Buffer size (in samples). Larger buffers prevent underruns, but take up memory.
                                       // Each wave in MaxWaves is allocated 1 buffer worth of sRAM (Teensy 3.6 total sRAM = 256k)
+  const uint32_t maxSamplingRate = 44100;
 #else
   const byte maxWaves = 32; // Maximum number of waveforms (used to set up data buffers and to ensure data file is large enough)
   const uint32_t bufSize = 2500;
+  const uint32_t maxSamplingRate = 96000;
 #endif
 const uint32_t maxWaveSize = 1000000; // Maximum number of samples per waveform
 const uint16_t maxEnvelopeSize = 10000; // Maximum size of AM onset/offset envelope (in samples)
-const uint32_t maxSamplingRate = 44100;
+
 
 union {
     byte byteArray[4];
@@ -60,9 +76,18 @@ union {
 float timerPeriod_Idle = 20; // Default hardware timer period while idle (no playback, awaiting commands; determines playback latency)
 
 // Pin definitions
-const byte RefEnable = 32; // External 3V reference enable pin
-const byte SyncPin=14; // AD5754 Pin 7 (Sync)
-const byte LDACPin=39; // AD5754 Pin 10 (LDAC)
+#if NUM_CHANNELS == 4
+  byte RefEnable = 32; // External 3V reference enable pin
+  byte SyncPin=14; // AD5754 Pin 7 (Sync)
+  byte LDACPin=39; // AD5754 Pin 10 (LDAC)
+#else
+  byte RefEnable = 31; // External 3V reference enable pin
+  byte SyncPin=34; // AD5754 Pin 7 (Sync)
+  byte LDACPin=32; // AD5754 Pin 10 (LDAC)
+#endif
+  byte RefEnable2 = 33;
+  byte SyncPin2=14;
+  byte LDACPin2=39; 
 
 // System objects
 SPISettings DACSettings(30000000, MSBFIRST, SPI_MODE2); // Settings for DAC
@@ -99,7 +124,7 @@ boolean loadFlag = false; // Set true when the buffer switches, to trigger filli
 int playBufferPos = 0; // Position of current sample in the current data buffer
 uint32_t playbackFilePos = 0; // Position of current sample in the data file being played from microSD -> DAC
 uint32_t loadingFilePos = 0; // Position of current sample in the data file being loaded from USB -> microSD
-byte preBuffer[maxWaves][bufSizeBytes][2] = {0}; // The first buffer worth of each waveform is stored here on load, to achieve super-low latency playback.
+byte preBuffer[maxWaves][2][bufSizeBytes] = {0}; // The first buffer worth of each waveform is stored here on load, to achieve super-low latency playback.
 boolean preBufferActive = 1; // Playback begins from the pre-buffer
 uint16_t DACBits_ZeroVolts = 32768; // Code (in bits) for 0V.
 byte thisBuf = 0; // Current buffer (for local variable use)
@@ -205,6 +230,14 @@ void setup() {
   digitalWrite(RefEnable, LOW); // Disabling external reference IC allows other voltage ranges with DAC internal reference
   pinMode(SyncPin, OUTPUT); // Configure SPI bus pins as outputs
   pinMode(LDACPin, OUTPUT);
+  #if NUM_CHANNELS == 8 // Set DAC2 I/O lines to idle
+    pinMode(RefEnable2, OUTPUT); 
+    pinMode(SyncPin2, OUTPUT);
+    pinMode(LDACPin2, OUTPUT);
+    digitalWrite(RefEnable2, LOW); 
+    digitalWrite(SyncPin2, HIGH); 
+    digitalWrite(LDACPin2, LOW); 
+  #endif
   SDcard.begin(SdioConfig(FIFO_SDIO));
   SDcard.remove("Wave0.wfm");
   Wave0 = SDcard.open("Wave0.wfm", O_RDWR | O_CREAT);
@@ -239,7 +272,7 @@ void loop() { // loop runs in parallel with hardware timer, at lower interrupt p
       hardwareTimer.priority(128);
       int i = 0;
       while ((nPreBufferBytesLoaded < bufSizeBytes) && (i < fbPos)) {
-        preBuffer[waveLoading][nPreBufferBytesLoaded][bufLoading] = fileTransferBuffer[i];
+        preBuffer[waveLoading][bufLoading][nPreBufferBytesLoaded] = fileTransferBuffer[i];
         nPreBufferBytesLoaded++; i++;
       }
       nBytesLoaded2SD += fbPos;
@@ -261,10 +294,8 @@ void loop() { // loop runs in parallel with hardware timer, at lower interrupt p
       }
       if (nBytes2LoadThisCycle > 0) {
         Serial.readBytes((char*)USBloadingBuffer,nBytes2LoadThisCycle);
-        for (int i = 0; i < nBytes2LoadThisCycle; i++) {
-          fileTransferBuffer[fbPos] = USBloadingBuffer[i];
-          fbPos++;
-        }
+        memcpy(fileTransferBuffer + fbPos, USBloadingBuffer, nBytes2LoadThisCycle);
+        fbPos += nBytes2LoadThisCycle;
       }
       if ((fbPos >= loadingFileBufferSize) || (nBytes2LoadThisCycle == 0)) {
         USBDataReady = true;
@@ -273,6 +304,9 @@ void loop() { // loop runs in parallel with hardware timer, at lower interrupt p
   } else if (usbLoadFlag_Env) {
     loadEnvelope();
     usbLoadFlag_Env = false;
+  } else if (usbLoadFlag_Wave) {
+    loadWaveform_Fast();
+    usbLoadFlag_Wave = false;
   }
   if (skipLoading > 0) {
     skipLoading--;
@@ -289,7 +323,7 @@ void handler(){ // The handler is triggered precisely every timerPeriod microsec
     opSource = 2; // UART 2
     newOpCode = true;
   } else if (USBCOM.available()) {
-    if (!loading2SD && !usbLoadFlag_Env) {
+    if (!loading2SD && !usbLoadFlag_Env && !usbLoadFlag_Wave) {
       opCode = USBCOM.readByte();
       opSource = 0; // USB
       newOpCode = true;
@@ -322,7 +356,7 @@ void handler(){ // The handler is triggered precisely every timerPeriod microsec
           returnModuleInfo();
         }
       break;
-      case 'N': // Return system constants
+      case 'N': // Return system params
         if (opSource == 0){
           USBCOM.writeByte(1); // 1 = Live mode (this file), 0 = Standard mode (BpodAudioPlayer firmware)
           USBCOM.writeUint16(maxWaves);
@@ -390,52 +424,11 @@ void handler(){ // The handler is triggered precisely every timerPeriod microsec
       break;
       case 'L': // Load sound
         if (opSource == 0) {
-          if (HARDWARE_VERSION == 1) {
-            waveIndex = USBCOM.readByte();
-            if (waveIndex < maxWaves) { // Sanity check
-              thisBuf = 1-currentLoadBuffer[waveIndex]; // Use opposite of side used for current playback
-              isStereo[waveIndex][thisBuf] = USBCOM.readByte();
-              nSamples[waveIndex][thisBuf] = USBCOM.readUint32();
-              nBytesPerSample[waveIndex][thisBuf] = 2+(isStereo[waveIndex][thisBuf]*2);
-              nWaveformBytes[waveIndex][thisBuf] = nSamples[waveIndex][thisBuf]*nBytesPerSample[waveIndex][thisBuf];
-              if (thisBuf == 0) {
-                Wave0.seek(maxWaveSizeBytes*waveIndex);
-              } else {
-                Wave0.seek((maxWaveSizeBytes*waveIndex)+bufferSideBOffset);
-              }
-              nFullReads = (unsigned long)(floor((double)nWaveformBytes[waveIndex][thisBuf]/(double)fileTransferBufferSize));
-              for (int i = 0; i < nFullReads; i++) {
-                while(Serial.available() == 0) {}
-                Serial.readBytes((char*)fileTransferBuffer,fileTransferBufferSize);
-                Wave0.write(fileTransferBuffer,fileTransferBufferSize);
-                if (i == 0) {
-                  for (int j = 0; j < bufSizeBytes; j++) {
-                     preBuffer[waveIndex][j][thisBuf] = fileTransferBuffer[j];
-                  }                
-                }
-              }
-              partialReadSize = (nWaveformBytes[waveIndex][thisBuf])-(nFullReads*fileTransferBufferSize);
-              if (partialReadSize > 0) {
-                Serial.readBytes((char*)fileTransferBuffer,partialReadSize);
-                Wave0.write(fileTransferBuffer,partialReadSize);
-                if (nFullReads == 0) {
-                  if ((nWaveformBytes[waveIndex][thisBuf]) > bufSizeBytes) {
-                    for (int j = 0; j < bufSizeBytes; j++) {
-                        preBuffer[waveIndex][j][thisBuf] = fileTransferBuffer[j];
-                    }
-                  } else {
-                    for (int j = 0; j < nWaveformBytes[waveIndex][thisBuf]; j++) {
-                      preBuffer[waveIndex][j][thisBuf] = fileTransferBuffer[j];
-                    }  
-                  }
-                }
-              }         
-              USBCOM.writeByte(1); Serial.send_now();
-              newWaveLoaded[waveIndex] = true;
-            }
-          } else {
-            loadWaveform_Safe();
-          }
+          #if HARDWARE_VERSION == 1
+            loadWaveform_Fast();
+          #else
+            usbLoadFlag_Wave = true;
+          #endif
         }
       break;
       case '>': // Load sound (slower, but can be loaded during playback) 
@@ -519,11 +512,11 @@ void handler(){ // The handler is triggered precisely every timerPeriod microsec
   }
   if (playing) {
     if (preBufferActive) {
-      dacValue.uint16[0] = word(preBuffer[iWavePlaying][playBufferPos+1][bufLoaded], preBuffer[iWavePlaying][playBufferPos][bufLoaded]);
+      dacValue.uint16[0] = word(preBuffer[iWavePlaying][bufLoaded][playBufferPos+1], preBuffer[iWavePlaying][bufLoaded][playBufferPos]);
       if (isStereo[iWavePlaying][bufLoaded]) { 
-        dacValue.uint16[1] = word(preBuffer[iWavePlaying][playBufferPos+3][bufLoaded], preBuffer[iWavePlaying][playBufferPos+2][bufLoaded]);
+        dacValue.uint16[1] = word(preBuffer[iWavePlaying][bufLoaded][playBufferPos+3], preBuffer[iWavePlaying][bufLoaded][playBufferPos+2]);
       } else {
-        dacValue.uint16[1] = word(preBuffer[iWavePlaying][playBufferPos+1][bufLoaded], preBuffer[iWavePlaying][playBufferPos][bufLoaded]);
+        dacValue.uint16[1] = word(preBuffer[iWavePlaying][bufLoaded][playBufferPos+1], preBuffer[iWavePlaying][bufLoaded][playBufferPos]);
       }
     } else {
       if (currentPlayBuffer == 0) {
@@ -824,6 +817,46 @@ void loadWaveform_Safe() {
     waveLoading = waveIndex;
     bufLoading = thisBuf;
 }
+
+void loadWaveform_Fast() {
+  waveIndex = USBCOM.readByte();
+  if (waveIndex < maxWaves) { // Sanity check
+    thisBuf = 1-currentLoadBuffer[waveIndex]; // Use opposite of side used for current playback
+    isStereo[waveIndex][thisBuf] = USBCOM.readByte();
+    nSamples[waveIndex][thisBuf] = USBCOM.readUint32();
+    nBytesPerSample[waveIndex][thisBuf] = 2+(isStereo[waveIndex][thisBuf]*2);
+    nWaveformBytes[waveIndex][thisBuf] = nSamples[waveIndex][thisBuf]*nBytesPerSample[waveIndex][thisBuf];
+    if (thisBuf == 0) {
+      Wave0.seek(maxWaveSizeBytes*waveIndex);
+    } else {
+      Wave0.seek((maxWaveSizeBytes*waveIndex)+bufferSideBOffset);
+    }
+    nFullReads = (unsigned long)(floor((double)nWaveformBytes[waveIndex][thisBuf]/(double)fileTransferBufferSize));
+    for (int i = 0; i < nFullReads; i++) {
+      while(Serial.available() == 0) {}
+      Serial.readBytes((char*)fileTransferBuffer,fileTransferBufferSize);
+      Wave0.write(fileTransferBuffer,fileTransferBufferSize);
+      if (i == 0) {
+         memcpy(preBuffer[waveIndex][thisBuf], fileTransferBuffer, bufSizeBytes);                
+      }
+    }
+    partialReadSize = (nWaveformBytes[waveIndex][thisBuf])-(nFullReads*fileTransferBufferSize);
+    if (partialReadSize > 0) {
+      Serial.readBytes((char*)fileTransferBuffer,partialReadSize);
+      Wave0.write(fileTransferBuffer,partialReadSize);
+      if (nFullReads == 0) {
+        if ((nWaveformBytes[waveIndex][thisBuf]) > bufSizeBytes) {
+           memcpy(preBuffer[waveIndex][thisBuf], fileTransferBuffer, bufSizeBytes);  
+        } else {
+           memcpy(preBuffer[waveIndex][thisBuf], fileTransferBuffer, nWaveformBytes[waveIndex][thisBuf]);
+        }
+      }
+    }         
+    USBCOM.writeByte(1); Serial.send_now();
+    newWaveLoaded[waveIndex] = true;
+  }
+}
+
 bool sdBusy() {
   return ready ? SDcard.card()->isBusy() : false;
 }

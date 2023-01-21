@@ -21,18 +21,32 @@
 
 // **NOTE** previous versions of this firmware required dependencies and modifications to the Teensy core files. As of firmware v3, these are no longer necessary.
 // **NOTE** Requires Arduino 1.8.15 or newer, and Teensyduino 1.5.4 or newer
+// **NOTE** As of firmware v3, channel count is set in the setup macros below. Separate firmware for the 8ch board is obsolete.
 
 #include "ArCOM.h"
 #include <SPI.h>
 #include "SdFat.h"
 
+#define FIRMWARE_VERSION 3
+
+// SETUP MACROS TO COMPILE FOR TARGET DEVICE:
+#define HARDWARE_VERSION 1 // Use: 1 = AOM rev 1.0-1.4 (as marked on PCB), 2 = AOM rev 2.0
+#define NUM_CHANNELS 4 // Use: 4 for 4-channel AOM, 8 for 8-channel AOM
+//-------------------------------------------
+
+// Validate macros
+#if (HARDWARE_VERSION > 2)
+#error Error! HARDWARE_VERSION must be either 1 or 2
+#endif
+
+#if !(NUM_CHANNELS == 4 || NUM_CHANNELS == 8)
+#error Error! NUM_CHANNELS must be either 4 or 8
+#endif
+
 // SD objects
 SdFs SDcard;
 FsFile Wave0; // File on microSD card, to store waveform data
 bool ready = false; // Indicates if SD is busy (for use with SDBusy() funciton)
-
-#define FIRMWARE_VERSION 3
-#define HARDWARE_VERSION 2 // Use: 1 = AOM rev 1.0-1.4 (as marked on PCB), 2 = AOM rev 2.0
 
 // Module setup
 char moduleName[] = "AudioPlayer"; // Name of module for manual override UI and state machine assembler
@@ -59,9 +73,18 @@ union {
 float timerPeriod_Idle = 20; // Default hardware timer period while idle (no playback, awaiting commands; determines playback latency)
 
 // Pin definitions
-const byte RefEnable = 32; // External 3V reference enable pin
-const byte SyncPin=14; // AD5754 Pin 7 (Sync)
-const byte LDACPin=39; // AD5754 Pin 10 (LDAC)
+#if NUM_CHANNELS == 4
+  byte RefEnable = 32; // External 3V reference enable pin
+  byte SyncPin=14; // AD5754 Pin 7 (Sync)
+  byte LDACPin=39; // AD5754 Pin 10 (LDAC)
+#else
+  byte RefEnable = 31; // External 3V reference enable pin
+  byte SyncPin=34; // AD5754 Pin 7 (Sync)
+  byte LDACPin=32; // AD5754 Pin 10 (LDAC)
+#endif
+  byte RefEnable2 = 33;
+  byte SyncPin2=14;
+  byte LDACPin2=39; 
 
 // System objects
 SPISettings DACSettings(30000000, MSBFIRST, SPI_MODE2); // Settings for DAC
@@ -195,6 +218,14 @@ void setup() {
   digitalWrite(RefEnable, LOW); // Disabling external reference IC allows other voltage ranges with DAC internal reference
   pinMode(SyncPin, OUTPUT); // Configure SPI bus pins as outputs
   pinMode(LDACPin, OUTPUT);
+  #if NUM_CHANNELS == 8 // Set DAC2 I/O lines to idle
+    pinMode(RefEnable2, OUTPUT); 
+    pinMode(SyncPin2, OUTPUT);
+    pinMode(LDACPin2, OUTPUT);
+    digitalWrite(RefEnable2, LOW); 
+    digitalWrite(SyncPin2, HIGH); 
+    digitalWrite(LDACPin2, LOW); 
+  #endif
   SDcard.begin(SdioConfig(FIFO_SDIO));
   SDcard.remove("Wave0.wfm");
   Wave0 = SDcard.open("Wave0.wfm", O_RDWR | O_CREAT);
@@ -338,7 +369,7 @@ void handler(){ // The handler is triggered precisely every timerPeriod microsec
       case 'L': // Load sound
         if (opSource == 0) {
           #if HARDWARE_VERSION == 1
-            loadWaveform();
+            loadSound();
           #else
             usbLoadFlag_Wave = true;
           #endif
@@ -574,7 +605,7 @@ void loadSound() {
       while (sdBusy()) {}
       Wave0.write(fileTransferBuffer,fileTransferBufferSize);
       if (i == 0) {   
-          memcpy(preBuffer[waveIndex], fileTransferBuffer, bufSizeBytes);           
+         memcpy(preBuffer[waveIndex], fileTransferBuffer, bufSizeBytes);           
       }
     }
     partialReadSize = (nWaveformBytes[waveIndex])-(nFullReads*fileTransferBufferSize);
