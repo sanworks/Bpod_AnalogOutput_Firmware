@@ -26,7 +26,7 @@
 #include "ArCOM.h"
 #include <SPI.h>
 
-#define FIRMWARE_VERSION 3
+#define FIRMWARE_VERSION 4
 
 // SETUP MACROS TO COMPILE FOR TARGET DEVICE:
 #define HARDWARE_VERSION 1 // Use: 1 = AOM rev 1.0-1.4 (as marked on PCB), 2 = AOM rev 2.0
