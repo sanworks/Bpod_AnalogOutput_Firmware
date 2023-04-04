@@ -2,7 +2,7 @@
   ----------------------------------------------------------------------------
 
   This file is part of the Sanworks Bpod_Gen2 repository
-  Copyright (C) 2022 Sanworks LLC, Rochester, New York, USA
+  Copyright (C) 2023 Sanworks LLC, Rochester, New York, USA
 
   ----------------------------------------------------------------------------
 
@@ -27,15 +27,15 @@
 #include <SPI.h>
 #include "SdFat.h"
 
-#define FIRMWARE_VERSION 4
+#define FIRMWARE_VERSION 5
 
 // SETUP MACROS TO COMPILE FOR TARGET DEVICE:
-#define HARDWARE_VERSION 1 // Use: 1 = AOM rev 1.0-1.4 (as marked on PCB), 2 = AOM rev 2.0
+#define HARDWARE_VERSION 2 // Use: 1 = AOM rev 1.0-1.4 (as marked on PCB), 2 = AOM rev 2.0
 #define NUM_CHANNELS 4 // Use: 4 for 4-channel AOM, 8 for 8-channel AOM
 //-------------------------------------------
 
 // Validate macros
-#if (HARDWARE_VERSION > 2)
+#if HARDWARE_VERSION > 2
 #error Error! HARDWARE_VERSION must be either 1 or 2
 #endif
 
@@ -55,11 +55,16 @@ byte circuitRevision = 0; // Circuit board revision, encoded as bits in an array
 const byte circuitRevisionArray[5] = {25,26,27,28,29};
 
 // Parameters
-const int maxWaves = 64; // Maximum number of waveforms (used to set up data buffers and to ensure data file is large enough)
+#if HARDWARE_VERSION == 2
+  const byte maxWaves = 128; // Maximum number of waveforms (used to set up data buffers and to ensure data file is large enough)
+  const byte maxTriggerProfiles = 128; // Maximum number of trigger profiles (vectors of waves to play on each channel for different trigger bytes) 
+#else
+  const byte maxWaves = 64; // Maximum number of waveforms (used to set up data buffers and to ensure data file is large enough)
+  const byte maxTriggerProfiles = 64; // Maximum number of trigger profiles (vectors of waves to play on each channel for different trigger bytes) 
+#endif
 const unsigned long bufSize = 1280; // Buffer size (in samples). Larger buffers prevent underruns, but take up memory.
                                     // Each wave in MaxWaves is allocated 1 buffer worth of sRAM (Teensy 3.6 total sRAM = 256k)
 const unsigned long maxWaveSize = 1000000; // Maximum number of samples per waveform
-const byte maxTriggerProfiles = 64; // Maximum number of trigger profiles (vectors of waves to play on each channel for different trigger bytes) 
 union {
     byte byteArray[4];
     float floatVal;
@@ -124,6 +129,7 @@ byte countdown2Play[NUM_CHANNELS] = {0}; // Set to 2 if a channel has been trigg
                                       // The phenotype, if too few cycles are skipped, is a short first sample. 
 uint16_t fixedVoltage = 0; // Fixed voltage to set on a set of target channels (ops 128-143)
 volatile boolean usbLoadFlag = false;
+volatile boolean trigProfileLoadFlag = false;
 boolean dac2Active = true; // Used to disable DAC2 on the 8ch module if sampling rate is too high for both DACs
 // Communication variables
 const int BpodSerialBaudRate = 1312500; // Communication rate for Bpod UART channel
@@ -345,6 +351,10 @@ void loop() { // loop runs in parallel with hardware timer, at lower interrupt p
     loadWaveform();
     usbLoadFlag = false;
   }
+  if (trigProfileLoadFlag) {
+    loadTriggerProfiles();
+    trigProfileLoadFlag = false;
+  }
 }
 
 void handler(){ // The handler is triggered precisely every timerPeriod microseconds. It processes serial commands and playback logic.
@@ -357,7 +367,7 @@ void handler(){ // The handler is triggered precisely every timerPeriod microsec
     opSource = 2; // UART 2
     newOpCode = true;
   } else if (USBCOM.available() > 0) {
-    if (!usbLoadFlag) {
+    if (!usbLoadFlag && !trigProfileLoadFlag) {
       opCode = USBCOM.readByte();
       opSource = 0; // USB
       newOpCode = true;
@@ -384,6 +394,10 @@ void handler(){ // The handler is triggered precisely every timerPeriod microsec
         if (opSource == 2) {
           USBCOM.writeByte(254);
         }
+      break;
+      case 'H': // Return hardware version information
+        USBCOM.writeByte(HARDWARE_VERSION);
+        USBCOM.writeByte(circuitRevision);
       break;
       case 'N': // Return playback params
         if (opSource == 0){
@@ -431,12 +445,13 @@ void handler(){ // The handler is triggered precisely every timerPeriod microsec
         }
       break;
       case 'F': // Load trigger profiles
-      for (int i = 0; i < NUM_CHANNELS; i++){
-        for (int j = 0; j < maxTriggerProfiles; j++) {
-          triggerProfiles[i][j] = USBCOM.readByte();
+        if (opSource == 0) {
+          #if HARDWARE_VERSION == 1
+            loadTriggerProfiles();
+          #else
+            trigProfileLoadFlag = true;
+          #endif
         }
-      }
-      USBCOM.writeByte(1); // Acknowledge
       break;
       case 'Y': // Depricated function to set up data file on microSD card, with enough space to store all waveforms
         if (opSource == 0) {
@@ -560,40 +575,27 @@ void handler(){ // The handler is triggered precisely every timerPeriod microsec
             }
           }
         }
-        BpodMessage = 0;
-        for (int i = 0; i<NUM_CHANNELS; i++) {
-          if (currentTriggerChannels[i]) {
-            switch(triggerMode) {
-              case 0: // Normal mode: Trigger only if not already playing
-                if (!playing[i]) {
-                  triggerChannel(i, currentTriggerWaves[i]);
-                  if (sendBpodEvents[i]) {
-                    bitSet(BpodMessage, i); 
-                  }
-                }
-              break;
-              case 1: // Master Mode: Trigger even if already playing
-                triggerChannelMaster(i, currentTriggerWaves[i]);
-                if (sendBpodEvents[i]) {
-                    bitSet(BpodMessage, i); 
-                }
-              break;
-              case 2:  // Toggle mode: Trigger stops channel if playing
-                if (playing[i]) {
-                  schedulePlaybackStop[i] = true;
-                } else {
-                  triggerChannel(i, currentTriggerWaves[i]);
-                }
-                if (sendBpodEvents[i]) {
-                   bitSet(BpodMessage, i); 
-                }
-              break;
+        triggerNewWaveforms(); // Triggers waves in currentTriggerWaves[] on channels currentTriggerChannels[]
+      break;
+      case '>': // Play a list of waveforms on specific channels
+        switch(opSource) {
+            case 0:
+              USBCOM.readByteArray(currentTriggerWaves, NUM_CHANNELS);
+            break;
+            case 1:
+              Serial1COM.readByteArray(currentTriggerWaves, NUM_CHANNELS);
+            break;
+            case 2:
+              Serial2COM.readByteArray(currentTriggerWaves, NUM_CHANNELS);
+            break;
+          }
+          for (int i = 0; i < NUM_CHANNELS; i++) {
+            currentTriggerChannels[i] = 0;
+            if (currentTriggerWaves[i] <  maxWaves) {
+              currentTriggerChannels[i] = 1;
             }
           }
-        }
-        if (BpodMessage > 0) {
-          Serial1COM.writeByte(BpodMessage); 
-        }
+          triggerNewWaveforms(); // Triggers waves in currentTriggerWaves[] on channels currentTriggerChannels[]
       break;
       case 'X': // Stop all playback
         zeroDAC();
@@ -786,16 +788,6 @@ void handler(){ // The handler is triggered precisely every timerPeriod microsec
     }
   }
 }
-//
-//void ProgramDAC(byte Data1, byte Data2, byte Data3) {
-//  digitalWrite(LDACPin1,HIGH);
-//  digitalWrite(SyncPin1,LOW);
-//  SPI.transfer (Data1);
-//  SPI.transfer (Data2);
-//  SPI.transfer (Data3);
-//  digitalWrite(SyncPin1,HIGH);
-//  digitalWrite(LDACPin1,LOW);
-//}
 
 void ProgramDAC(byte Data1, byte Data2, byte Data3) {
   digitalWrite(LDACPin1,HIGH);
@@ -918,7 +910,7 @@ void triggerChannel(byte channel, byte waveIndex) {
       preBufferActive[channel] = true;
       filePos[channel] = (maxWaveSizeBytes*waveIndex) + bufSizeBytes;
 }
-void triggerChannelMaster(byte channel, byte waveIndex) { // In Master mode, swap waveforms immediately (no countdown2Play)
+void triggerChannelASAP(byte channel, byte waveIndex) { // In Master mode, swap waveforms immediately (no countdown2Play)
       waveLoaded[channel] = waveIndex; 
       currentSample[channel] = 0;
       channelTime[channel] = 0;
@@ -929,6 +921,52 @@ void triggerChannelMaster(byte channel, byte waveIndex) { // In Master mode, swa
       preBufferActive[channel] = true;
       filePos[channel] = (maxWaveSizeBytes*waveIndex) + bufSizeBytes;
 }
+
+void triggerNewWaveforms() {
+  BpodMessage = 0;
+  for (int i = 0; i<NUM_CHANNELS; i++) {
+    if (currentTriggerChannels[i]) {
+      switch(triggerMode) {
+        case 0: // Normal mode: Trigger only if not already playing
+          if (!playing[i]) {
+            if (playbackActive) {
+              triggerChannelASAP(i, currentTriggerWaves[i]);
+            } else {
+              triggerChannel(i, currentTriggerWaves[i]);
+            }
+            if (sendBpodEvents[i]) {
+              bitSet(BpodMessage, i); 
+            }
+          }
+        break;
+        case 1: // Master Mode: Trigger even if already playing
+          triggerChannelASAP(i, currentTriggerWaves[i]);
+          if (sendBpodEvents[i]) {
+              bitSet(BpodMessage, i); 
+          }
+        break;
+        case 2:  // Toggle mode: Trigger stops channel if playing
+          if (playing[i]) {
+            schedulePlaybackStop[i] = true;
+          } else {
+            if (playbackActive) {
+              triggerChannelASAP(i, currentTriggerWaves[i]);
+            } else {
+              triggerChannel(i, currentTriggerWaves[i]);
+            }
+          }
+          if (sendBpodEvents[i]) {
+              bitSet(BpodMessage, i); 
+          }
+        break;
+      }
+    }
+  }
+  if (BpodMessage > 0) {
+    Serial1COM.writeByte(BpodMessage); 
+  }
+}
+
 void resetChannel(byte channel) { // Resets playback to first sample (in loop mode)
       currentSample[channel] = 0;
       currentBuffer[channel] = 1;
@@ -936,6 +974,15 @@ void resetChannel(byte channel) { // Resets playback to first sample (in loop mo
       loadFlag[channel] = 1;
       preBufferActive[channel] = true;
       filePos[channel] = (maxWaveSizeBytes*waveLoaded[channel]) + bufSizeBytes;
+}
+
+void loadTriggerProfiles() {
+  for (int i = 0; i < NUM_CHANNELS; i++){
+    for (int j = 0; j < maxTriggerProfiles; j++) {
+      triggerProfiles[i][j] = USBCOM.readByte();
+    }
+  }
+  USBCOM.writeByte(1); // Acknowledge
 }
 
 void loadWaveform() {
