@@ -30,7 +30,7 @@
 #define FIRMWARE_VERSION 5
 
 // SETUP MACROS TO COMPILE FOR TARGET DEVICE:
-#define HARDWARE_VERSION 2 // Use: 1 = AOM rev 1.0-1.4 (as marked on PCB), 2 = AOM rev 2.0
+#define HARDWARE_VERSION 1 // Use: 1 = AOM rev 1.0-1.4 (as marked on PCB), 2 = AOM rev 2.0
 #define NUM_CHANNELS 4 // Use: 4 for 4-channel AOM, 8 for 8-channel AOM
 //-------------------------------------------
 
@@ -115,6 +115,7 @@ unsigned long loopDuration[NUM_CHANNELS] = {0}; // Duration of loop for loop mod
 unsigned long channelTime[NUM_CHANNELS] = {0}; // Time (in samples) since looping channel was triggered (used to compute looped playback end)
 byte waveIndex = 0; // Index of current waveform (1-maxWaves; maxWaves is in the "parameters" section above)
 byte channelIndex = 0; // Index of current output channel (1-4)
+byte channelBits = 0; // Bits indicate channels to update
 const unsigned long maxWaveSizeBytes = maxWaveSize*2; // Maximum size of a waveform in bytes (maxWaveSize is in the "parameters" section above)
 const int bufSizeBytes = bufSize*2; // Size of the buffer in bytes (bufSizeBytes is in the "parameters" section above)
 byte currentBuffer[NUM_CHANNELS] = {0}; // Current buffer for each channel (a double buffering scheme allows one to be filled while the other is read)
@@ -597,9 +598,6 @@ void handler(){ // The handler is triggered precisely every timerPeriod microsec
           }
           triggerNewWaveforms(); // Triggers waves in currentTriggerWaves[] on channels currentTriggerChannels[]
       break;
-      case 'X': // Stop all playback
-        zeroDAC();
-      break;    
       case 'S': // Set sampling rate
       if (opSource == 0) {
         USBCOM.readByteArray(timerPeriod.byteArray, 4);
@@ -611,7 +609,23 @@ void handler(){ // The handler is triggered precisely every timerPeriod microsec
         hardwareTimer.begin(handler, timerPeriod.floatVal);
       }
       break;
-      case 129 ... 143: // Set a fixed voltage on output channels indicated by lowest 4 bits of op code(will be overridden by next call to play a waveform on the same channel(s))
+      case 'X': // Stop all playback
+        zeroDAC();
+      break;
+      case '!': // Set a fixed voltage on selected output channels
+        switch(opSource) {
+          case 0:
+            channelBits = USBCOM.readByte();
+            fixedVoltage = USBCOM.readUint16(); // Voltage bits
+          break;
+          case 1:
+            channelBits = Serial1COM.readByte();
+            fixedVoltage = Serial1COM.readUint16(); // Voltage bits
+          break;
+        }
+        setFixedOutput(channelBits, fixedVoltage);
+      break;    
+      case 129 ... 143: // Legacy op: Set a fixed voltage on output channels indicated by lowest 4 bits of op code(will be overridden by next call to play a waveform on the same channel(s))
         switch(opSource) {
           case 0:
             fixedVoltage = USBCOM.readUint16(); // Voltage bits
@@ -620,22 +634,7 @@ void handler(){ // The handler is triggered precisely every timerPeriod microsec
             fixedVoltage = Serial1COM.readUint16(); // Voltage bits
           break;
         }
-        byte targetChannelBits = opCode - 128; // Bits indicate channels to trigger
-        for (int i = 0; i < NUM_CHANNELS; i++) {
-          if (bitRead(targetChannelBits, i)) {
-            playing[i] = 1;
-            dacValue.uint16[i] = fixedVoltage;
-          }
-        }
-        dacWrite();
-        for (int i = 0; i < NUM_CHANNELS; i++) {
-          if (bitRead(targetChannelBits,i)) {
-            playing[i] = 0;
-          }
-        }
-        if (opSource == 0) {
-          USBCOM.writeByte(1);
-        }
+        setFixedOutput(opCode - 128, fixedVoltage);
       break;
     }
   }
@@ -983,6 +982,24 @@ void loadTriggerProfiles() {
     }
   }
   USBCOM.writeByte(1); // Acknowledge
+}
+
+void setFixedOutput(byte targetChannelBits, uint16_t targetVoltage) {
+    for (int i = 0; i < NUM_CHANNELS; i++) {
+      if (bitRead(targetChannelBits, i)) {
+        playing[i] = 1;
+        dacValue.uint16[i] = targetVoltage;
+      }
+    }
+    dacWrite();
+    for (int i = 0; i < NUM_CHANNELS; i++) {
+      if (bitRead(targetChannelBits,i)) {
+        playing[i] = 0;
+      }
+    }
+    if (opSource == 0) {
+      USBCOM.writeByte(1);
+    }
 }
 
 void loadWaveform() {
