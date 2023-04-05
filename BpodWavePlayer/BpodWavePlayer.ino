@@ -1007,7 +1007,7 @@ void loadWaveform() {
       while (sdBusy()) {}
       Wave0.write(fileTransferBuffer,partialReadSize);
       if (nFullReads == 0) {
-        if ((nSamples[waveIndex]*2) > fileTransferBufferSize) {
+        if ((nSamples[waveIndex]*2) > bufSizeBytes) {
           memcpy(preBuffer[waveIndex], fileTransferBuffer, bufSizeBytes); 
         } else {
           memcpy(preBuffer[waveIndex], fileTransferBuffer, nSamples[waveIndex]*2);  
