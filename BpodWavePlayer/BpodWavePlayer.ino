@@ -30,12 +30,12 @@
 #define FIRMWARE_VERSION 5
 
 // SETUP MACROS TO COMPILE FOR TARGET DEVICE:
-#define HARDWARE_VERSION 1 // Use: 1 = AOM rev 1.0-1.4 (as marked on PCB), 2 = AOM rev 2.0
-#define NUM_CHANNELS 4 // Use: 4 for 4-channel AOM, 8 for 8-channel AOM
+#define HARDWARE_VERSION 0 // Use: 1 = AOM rev 1.0-1.4 (as marked on PCB), 2 = AOM rev 2.0
+#define NUM_CHANNELS 8 // Use: 4 for 4-channel AOM, 8 for 8-channel AOM
 //-------------------------------------------
 
 // Validate macros
-#if HARDWARE_VERSION > 2
+#if (HARDWARE_VERSION < 1) || (HARDWARE_VERSION > 2)
 #error Error! HARDWARE_VERSION must be either 1 or 2
 #endif
 
@@ -624,7 +624,7 @@ void handler(){ // The handler is triggered precisely every timerPeriod microsec
           break;
         }
         setFixedOutput(channelBits, fixedVoltage);
-      break;    
+      break;
       case 129 ... 143: // Legacy op: Set a fixed voltage on output channels indicated by lowest 4 bits of op code(will be overridden by next call to play a waveform on the same channel(s))
         switch(opSource) {
           case 0:

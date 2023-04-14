@@ -29,12 +29,12 @@
 #define FIRMWARE_VERSION 4
 
 // SETUP MACROS TO COMPILE FOR TARGET DEVICE:
-#define HARDWARE_VERSION 1 // Use: 1 = AOM rev 1.0-1.4 (as marked on PCB), 2 = AOM rev 2.0
+#define HARDWARE_VERSION 0 // Use: 1 = AOM rev 1.0-1.4 (as marked on PCB), 2 = AOM rev 2.0
 #define NUM_CHANNELS 4 // Use: 4 for 4-channel AOM, 8 for 8-channel AOM
 //-------------------------------------------
 
 // Validate macros
-#if (HARDWARE_VERSION > 2)
+#if (HARDWARE_VERSION < 1) || (HARDWARE_VERSION > 2)
 #error Error! HARDWARE_VERSION must be either 1 or 2
 #endif
 
