@@ -19,19 +19,20 @@
 
 */
 
-// **NOTE** previous versions of this firmware required dependencies and modifications to the Teensy core files. As of firmware v3, these are no longer necessary.
-// **NOTE** Requires Arduino 1.8.15 or newer, and Teensyduino 1.5.4 or newer
+// **NOTE** previous versions of this firmware required dependencies and modifications to the Teensy core files. 
+//          As of firmware v3, these are no longer necessary.
+// **NOTE** Requires Arduino 2.2.1 or newer, with Teensy board package 1.58.1 or newer
 // **NOTE** As of firmware v4, channel count is set in the setup macros below. Separate firmware for the 8ch board is obsolete.
 
 #include "ArCOM.h"
 #include <SPI.h>
 #include "SdFat.h"
 
-#define FIRMWARE_VERSION 5
+#define FIRMWARE_VERSION 6
 
 // SETUP MACROS TO COMPILE FOR TARGET DEVICE:
-#define HARDWARE_VERSION 0 // Use: 1 = AOM rev 1.0-1.4 (as marked on PCB), 2 = AOM rev 2.0
-#define NUM_CHANNELS 8 // Use: 4 for 4-channel AOM, 8 for 8-channel AOM
+#define HARDWARE_VERSION 2 // Use: 1 = AOM rev 1.0-1.4 (as marked on PCB), 2 = AOM rev 2.0
+#define NUM_CHANNELS 4 // Use: 4 for 4-channel AOM, 8 for 8-channel AOM
 //-------------------------------------------
 
 // Validate macros
@@ -383,11 +384,13 @@ void handler(){ // The handler is triggered precisely every timerPeriod microsec
           USBCOM.writeUint32(FIRMWARE_VERSION); // Send firmware version
         }
       break;
+
       case 255: // Return Bpod module info
         if (opSource == 1) { // Only returns this info if requested from state machine device
           returnModuleInfo();
         }
       break;
+
       case 254: // Relay test byte from USB to echo module, or from echo module back to USB 
         if (opSource == 0) {
           Serial2COM.writeByte(254);
@@ -396,35 +399,38 @@ void handler(){ // The handler is triggered precisely every timerPeriod microsec
           USBCOM.writeByte(254);
         }
       break;
+
       case 'H': // Return hardware version information
         USBCOM.writeByte(HARDWARE_VERSION);
         USBCOM.writeByte(circuitRevision);
       break;
-      case 'N': // Return playback params
+
+      case 'N': // Return hardware setup params
         if (opSource == 0){
           USBCOM.writeByte(NUM_CHANNELS);
           USBCOM.writeUint16(maxWaves);
-          USBCOM.writeByte(triggerMode);
-          USBCOM.writeByte(triggerProfileEnable);
           USBCOM.writeByte(maxTriggerProfiles);
-          USBCOM.writeByte(rangeIndex);
-          USBCOM.writeByteArray(timerPeriod.byteArray, 4);
-          USBCOM.writeByteArray(sendBpodEvents, NUM_CHANNELS);
-          USBCOM.writeByteArray(loopMode, NUM_CHANNELS);
-          USBCOM.writeUint32Array(loopDuration, NUM_CHANNELS);
         }
       break;
-      case 'O': // Set loop mode and duration (for each channel)
-      if (opSource == 0){
+
+      case 'O': // Set loop mode (for each channel)
+      if (opSource == 0) {
         for (int i = 0; i < NUM_CHANNELS; i++) {
           loopMode[i] = USBCOM.readByte();
         }
+        USBCOM.writeByte(1); // Acknowledge
+      }
+      break;
+
+      case 'D': // Set loop duration (for each channel)
+      if (opSource == 0) {
         for (int i = 0; i < NUM_CHANNELS; i++) {
           loopDuration[i] = USBCOM.readUint32();
         }
         USBCOM.writeByte(1); // Acknowledge
       }
       break;
+
       case 'V': // Set Bpod event reporting (for each channel)
       if (opSource == 0){
         for (int i = 0; i < NUM_CHANNELS; i++) {
@@ -433,18 +439,21 @@ void handler(){ // The handler is triggered precisely every timerPeriod microsec
         USBCOM.writeByte(1); // Acknowledge
       }
       break;
+
       case 'T': // Set trigger mode
         if (opSource == 0){
            triggerMode = USBCOM.readByte(); 
            USBCOM.writeByte(1); // Acknowledge
         }
       break;
+
       case 'B': // Set trigger profile enable
         if (opSource == 0){
            triggerProfileEnable = USBCOM.readByte();
            USBCOM.writeByte(1); // Acknowledge
         }
       break;
+
       case 'F': // Load trigger profiles
         if (opSource == 0) {
           #if HARDWARE_VERSION == 1
@@ -454,12 +463,14 @@ void handler(){ // The handler is triggered precisely every timerPeriod microsec
           #endif
         }
       break;
+
       case 'Y': // Depricated function to set up data file on microSD card, with enough space to store all waveforms
         if (opSource == 0) {
           // ***NOTE*** Firmware now runs microSD setup on boot. This op's ack byte is retained for backwards compatability with old code.
           USBCOM.writeByte(1); // Acknowledge
         }
       break;
+
       case 'R': // Set DAC range (for all outputs)
         if (opSource == 0) {
           rangeIndex = USBCOM.readByte(); // rangeIndex 0 = '0V:5V', 1 = '0V:10V', 2 = '0V:12V', 3 = '-5V:5V', 4 = '-10V:10V', 5 = '-12V:12V'
@@ -523,6 +534,7 @@ void handler(){ // The handler is triggered precisely every timerPeriod microsec
           USBCOM.writeByte(1); // Acknowledge
         }
       break;
+
       case 'L': // Load sound
         if (opSource == 0) {
           #if HARDWARE_VERSION == 1
@@ -532,6 +544,7 @@ void handler(){ // The handler is triggered precisely every timerPeriod microsec
           #endif
         }
       break;
+
       case 'P': // Play a waveform (1 max; any subset of channels)
         if (triggerProfileEnable) {
           switch(opSource) {
@@ -578,6 +591,7 @@ void handler(){ // The handler is triggered precisely every timerPeriod microsec
         }
         triggerNewWaveforms(); // Triggers waves in currentTriggerWaves[] on channels currentTriggerChannels[]
       break;
+
       case '>': // Play a list of waveforms on specific channels
         switch(opSource) {
             case 0:
@@ -598,6 +612,7 @@ void handler(){ // The handler is triggered precisely every timerPeriod microsec
           }
           triggerNewWaveforms(); // Triggers waves in currentTriggerWaves[] on channels currentTriggerChannels[]
       break;
+
       case 'S': // Set sampling rate
       if (opSource == 0) {
         USBCOM.readByteArray(timerPeriod.byteArray, 4);
@@ -609,9 +624,11 @@ void handler(){ // The handler is triggered precisely every timerPeriod microsec
         hardwareTimer.begin(handler, timerPeriod.floatVal);
       }
       break;
+
       case 'X': // Stop all playback
         zeroDAC();
       break;
+
       case '!': // Set a fixed voltage on selected output channels
         switch(opSource) {
           case 0:
@@ -625,6 +642,7 @@ void handler(){ // The handler is triggered precisely every timerPeriod microsec
         }
         setFixedOutput(channelBits, fixedVoltage);
       break;
+
       case 129 ... 143: // Legacy op: Set a fixed voltage on output channels indicated by lowest 4 bits of op code(will be overridden by next call to play a waveform on the same channel(s))
         switch(opSource) {
           case 0:
