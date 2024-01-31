@@ -622,6 +622,7 @@ void handler(){ // The handler is triggered precisely every timerPeriod microsec
         } 
         hardwareTimer.end();
         hardwareTimer.begin(handler, timerPeriod.floatVal);
+        USBCOM.writeByte(1); // Acknowledge
       }
       break;
 
